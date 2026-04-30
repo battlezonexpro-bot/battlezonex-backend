@@ -3,7 +3,8 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const axios = require("axios");
 const qs = require("querystring");
-
+console.log("PAYLOAD:", data);
+console.log("RESPONSE:", response.data);
 const app = express();
 
 app.use(cors());
