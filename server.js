@@ -1,5 +1,14 @@
 const express = require("express");
 const cors = require("cors");
+const admin = require("firebase-admin");
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
 
 const app = express();
 
@@ -10,17 +19,35 @@ app.get("/", (req, res) => {
    res.send("BattleZoneX Backend Running");
 });
 
-app.post("/webhook", (req, res) => {
+app.post("/webhook", async (req, res) => {
 
-   const data = req.body;
+   try {
 
-   console.log(data);
+      const data = req.body;
 
-   if(data.status === "SUCCESS"){
-      console.log("Payment Success");
+      console.log(data);
+
+      if(data.status === "SUCCESS"){
+
+         await db.collection("payments").add({
+            uid: data.uid,
+            amount: data.amount,
+            utr: data.utr,
+            status: "success",
+            createdAt: Date.now()
+         });
+
+         console.log("Payment Saved");
+      }
+
+      res.send("OK");
+
+   } catch (e) {
+
+      console.log(e);
+      res.status(500).send("Error");
+
    }
-
-   res.send("OK");
 });
 
 const PORT = process.env.PORT || 3000;
