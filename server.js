@@ -3,19 +3,25 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const axios = require("axios");
 const qs = require("querystring");
-console.log("PAYLOAD:", data);
-console.log("RESPONSE:", response.data);
+
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-/* Firebase Init */
-const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+/* Firebase Safe Init */
+let serviceAccount;
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+
+} catch (e) {
+  console.log("Firebase config error:", e.message);
+}
 
 const db = admin.firestore();
 
@@ -27,7 +33,7 @@ app.get("/", (req, res) => {
   res.send("BattleZoneX Backend Running");
 });
 
-/* CREATE ORDER (Pay0) */
+/* CREATE ORDER */
 app.post("/create-order", async (req, res) => {
 
   try {
@@ -40,20 +46,20 @@ app.post("/create-order", async (req, res) => {
       uid
     } = req.body;
 
-    const data = {
+    const payload = {
       customer_mobile,
       customer_name,
       user_token: PAY0_API_KEY,
       amount,
       order_id,
-      redirect_url: "https://battlezonex-backend.onrender.com/success",
+      redirect_url: "https://battlezonex-backend.onrender.com/webhook",
       remark1: uid,
       remark2: "BattleZoneX"
     };
 
     const response = await axios.post(
       "https://pay0.shop/api/create-order",
-      qs.stringify(data),
+      qs.stringify(payload),
       {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded"
@@ -61,10 +67,12 @@ app.post("/create-order", async (req, res) => {
       }
     );
 
+    console.log("Pay0 Response:", response.data);
+
     res.json(response.data);
 
   } catch (e) {
-    console.log(e);
+    console.log("Create Order Error:", e?.response?.data || e.message);
     res.status(500).json({ status: false, message: "Server Error" });
   }
 
@@ -102,6 +110,7 @@ app.post("/webhook", async (req, res) => {
 
 });
 
+/* PORT */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
