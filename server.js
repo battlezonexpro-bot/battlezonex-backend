@@ -9,13 +9,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* SAFE FIREBASE INIT */
+/* ---------------- FIREBASE INIT ---------------- */
 let db;
 
 try {
-
   if (process.env.FIREBASE_CONFIG) {
-
     const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 
     admin.initializeApp({
@@ -24,26 +22,25 @@ try {
 
     db = admin.firestore();
 
-    console.log("Firebase Connected");
-
+    console.log("🔥 Firebase Connected");
   } else {
-    console.log("FIREBASE_CONFIG missing");
+    console.log("❌ FIREBASE_CONFIG missing");
   }
-
-} catch (e) {
-  console.log("Firebase Error:", e.message);
+} catch (err) {
+  console.log("Firebase Error:", err.message);
 }
 
-/* HOME */
+/* ---------------- KEYS ---------------- */
+const PAY0_API_KEY = process.env.PAY0_API_KEY;
+
+/* ---------------- HOME ---------------- */
 app.get("/", (req, res) => {
-  res.send("BattleZoneX Backend Running");
+  res.send("🚀 BattleZoneX Backend Running");
 });
 
-/* CREATE ORDER */
+/* ---------------- CREATE ORDER ---------------- */
 app.post("/create-order", async (req, res) => {
-
   try {
-
     const {
       customer_mobile,
       customer_name,
@@ -55,7 +52,7 @@ app.post("/create-order", async (req, res) => {
     const payload = {
       customer_mobile,
       customer_name,
-      user_token: process.env.PAY0_API_KEY,
+      user_token: PAY0_API_KEY,
       amount,
       order_id,
       redirect_url: "https://battlezonex-backend.onrender.com/webhook",
@@ -73,49 +70,62 @@ app.post("/create-order", async (req, res) => {
       }
     );
 
+    console.log("Pay0 Response:", response.data);
+
     res.json(response.data);
 
-  } catch (e) {
-    console.log("Create Error:", e.message);
-    res.status(500).json({ status: false });
+  } catch (err) {
+    console.log("Create Order Error:", err.message);
+    res.status(500).json({ status: false, message: "Server Error" });
   }
-
 });
 
-/* WEBHOOK */
+/* ---------------- WEBHOOK (COIN SYSTEM) ---------------- */
 app.post("/webhook", async (req, res) => {
-
   try {
-
     const data = req.body;
-    console.log("Webhook:", data);
 
-    if (db && data.txnStatus === "SUCCESS") {
+    console.log("📩 Webhook:", data);
 
-      await db.collection("payments").add({
-        uid: data.remark1,
-        amount: data.amount,
-        orderId: data.orderId,
-        utr: data.utr,
-        status: "success",
-        createdAt: Date.now()
-      });
+    if (data.status === "SUCCESS") {
 
-      console.log("Saved");
+      const uid = data.remark1;
+      const amount = Number(data.amount);
+
+      if (!db) {
+        console.log("DB not ready");
+        return res.send("OK");
+      }
+
+      const userRef = db.collection("users").doc(uid);
+      const user = await userRef.get();
+
+      if (!user.exists) {
+        await userRef.set({
+          coins: amount
+        });
+      } else {
+        let oldCoins = user.data().coins || 0;
+
+        await userRef.update({
+          coins: oldCoins + amount
+        });
+      }
+
+      console.log("💰 Coins Added:", amount);
     }
 
     res.send("OK");
 
-  } catch (e) {
-    console.log(e.message);
+  } catch (err) {
+    console.log("Webhook Error:", err.message);
     res.status(500).send("Error");
   }
-
 });
 
-/* PORT (MOST IMPORTANT) */
+/* ---------------- PORT ---------------- */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("Server Running on", PORT);
+  console.log("🚀 Server Running on Port", PORT);
 });
