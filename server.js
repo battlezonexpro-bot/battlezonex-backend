@@ -1,13 +1,15 @@
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
+const axios = require("axios");
+const qs = require("querystring");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-/* Firebase Config */
+/* Firebase Init */
 const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 
 admin.initializeApp({
@@ -16,84 +18,91 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/* Pay0 Keys */
+/* Keys */
 const PAY0_API_KEY = process.env.PAY0_API_KEY;
-const PAY0_SECRET_KEY = process.env.PAY0_SECRET_KEY;
 
-/* Home Route */
+/* Home */
 app.get("/", (req, res) => {
-   res.send("BattleZoneX Backend Running");
+  res.send("BattleZoneX Backend Running");
 });
 
-/* Webhook Route */
+/* CREATE ORDER (Pay0) */
+app.post("/create-order", async (req, res) => {
+
+  try {
+
+    const {
+      customer_mobile,
+      customer_name,
+      amount,
+      order_id,
+      uid
+    } = req.body;
+
+    const data = {
+      customer_mobile,
+      customer_name,
+      user_token: PAY0_API_KEY,
+      amount,
+      order_id,
+      redirect_url: "https://battlezonex-backend.onrender.com/success",
+      remark1: uid,
+      remark2: "BattleZoneX"
+    };
+
+    const response = await axios.post(
+      "https://pay0.shop/api/create-order",
+      qs.stringify(data),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      }
+    );
+
+    res.json(response.data);
+
+  } catch (e) {
+    console.log(e);
+    res.status(500).json({ status: false, message: "Server Error" });
+  }
+
+});
+
+/* WEBHOOK */
 app.post("/webhook", async (req, res) => {
 
-   try {
+  try {
 
-      const data = req.body;
+    const data = req.body;
 
-      console.log("Webhook Data:", data);
+    console.log("Webhook:", data);
 
-      /* Payment Success */
-      if (data.status === "SUCCESS") {
+    if (data.txnStatus === "SUCCESS") {
 
-         /* Duplicate Check */
-         const existing = await db
-            .collection("payments")
-            .where("utr", "==", data.utr)
-            .get();
+      await db.collection("payments").add({
+        uid: data.remark1,
+        orderId: data.orderId,
+        amount: data.amount,
+        utr: data.utr,
+        status: "success",
+        createdAt: Date.now()
+      });
 
-         if (!existing.empty) {
-            return res.send("Duplicate Payment");
-         }
+      console.log("Payment Saved");
+    }
 
-         /* Save Payment */
-         await db.collection("payments").add({
-            uid: data.uid || "unknown",
-            amount: data.amount || "0",
-            utr: data.utr || "no_utr",
-            status: "success",
-            paymentId: data.payment_id || "",
-            apiKey: !!PAY0_API_KEY,
-            secretKey: !!PAY0_SECRET_KEY,
-            createdAt: Date.now()
-         });
+    res.send("OK");
 
-         console.log("Payment Saved");
-
-         return res.send("Payment Success Saved");
-      }
-
-      /* Failed Payment */
-      if (data.status === "FAILED") {
-
-         await db.collection("failed_payments").add({
-            uid: data.uid || "unknown",
-            amount: data.amount || "0",
-            utr: data.utr || "no_utr",
-            status: "failed",
-            createdAt: Date.now()
-         });
-
-         console.log("Payment Failed");
-
-         return res.send("Failed Payment Saved");
-      }
-
-      res.send("Webhook Received");
-
-   } catch (e) {
-
-      console.log(e);
-      res.status(500).send("Server Error");
-
-   }
+  } catch (e) {
+    console.log(e);
+    res.status(500).send("Error");
+  }
 
 });
 
-/* Start Server */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-   console.log("Server Running On Port " + PORT);
+  console.log("Server Running on " + PORT);
 });
