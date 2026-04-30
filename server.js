@@ -9,26 +9,32 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* Firebase Safe Init */
-let serviceAccount;
+/* SAFE FIREBASE INIT */
+let db;
 
 try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+  if (process.env.FIREBASE_CONFIG) {
+
+    const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+
+    db = admin.firestore();
+
+    console.log("Firebase Connected");
+
+  } else {
+    console.log("FIREBASE_CONFIG missing");
+  }
 
 } catch (e) {
-  console.log("Firebase config error:", e.message);
+  console.log("Firebase Error:", e.message);
 }
 
-const db = admin.firestore();
-
-/* Keys */
-const PAY0_API_KEY = process.env.PAY0_API_KEY;
-
-/* Home */
+/* HOME */
 app.get("/", (req, res) => {
   res.send("BattleZoneX Backend Running");
 });
@@ -49,7 +55,7 @@ app.post("/create-order", async (req, res) => {
     const payload = {
       customer_mobile,
       customer_name,
-      user_token: PAY0_API_KEY,
+      user_token: process.env.PAY0_API_KEY,
       amount,
       order_id,
       redirect_url: "https://battlezonex-backend.onrender.com/webhook",
@@ -67,13 +73,11 @@ app.post("/create-order", async (req, res) => {
       }
     );
 
-    console.log("Pay0 Response:", response.data);
-
     res.json(response.data);
 
   } catch (e) {
-    console.log("Create Order Error:", e?.response?.data || e.message);
-    res.status(500).json({ status: false, message: "Server Error" });
+    console.log("Create Error:", e.message);
+    res.status(500).json({ status: false });
   }
 
 });
@@ -84,35 +88,34 @@ app.post("/webhook", async (req, res) => {
   try {
 
     const data = req.body;
-
     console.log("Webhook:", data);
 
-    if (data.txnStatus === "SUCCESS") {
+    if (db && data.txnStatus === "SUCCESS") {
 
       await db.collection("payments").add({
         uid: data.remark1,
-        orderId: data.orderId,
         amount: data.amount,
+        orderId: data.orderId,
         utr: data.utr,
         status: "success",
         createdAt: Date.now()
       });
 
-      console.log("Payment Saved");
+      console.log("Saved");
     }
 
     res.send("OK");
 
   } catch (e) {
-    console.log(e);
+    console.log(e.message);
     res.status(500).send("Error");
   }
 
 });
 
-/* PORT */
+/* PORT (MOST IMPORTANT) */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("Server Running on " + PORT);
+  console.log("Server Running on", PORT);
 });
