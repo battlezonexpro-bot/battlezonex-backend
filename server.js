@@ -55,7 +55,7 @@ app.post("/create-order", async (req, res) => {
       user_token: PAY0_API_KEY,
       amount,
       order_id,
-      redirect_url: "https://battlezonex-backend.onrender.com/webhook",
+      redirect_url: "https://battlezonex-backend.onrender.com/webhook",  // Webhook URL after payment
       remark1: uid,
       remark2: "BattleZoneX"
     };
@@ -70,62 +70,50 @@ app.post("/create-order", async (req, res) => {
       }
     );
 
-    console.log("Pay0 Response:", response.data);
-
     res.json(response.data);
-
-  } catch (err) {
-    console.log("Create Order Error:", err.message);
+  } catch (error) {
+    console.error("Error creating order:", error);
     res.status(500).json({ status: false, message: "Server Error" });
   }
 });
 
-/* ---------------- WEBHOOK (COIN SYSTEM) ---------------- */
+/* ---------------- WEBHOOK ---------------- */
 app.post("/webhook", async (req, res) => {
+  const data = req.body;
+
+  console.log("Received Webhook Data:", data);  // Logs webhook data
+
   try {
-    const data = req.body;
-
-    console.log("📩 Webhook:", data);
-
     if (data.status === "SUCCESS") {
+      const uid = data.remark1;   // User ID from webhook data
+      const amount = Number(data.amount);  // Amount to be added
 
-      const uid = data.remark1;
-      const amount = Number(data.amount);
-
-      if (!db) {
-        console.log("DB not ready");
-        return res.send("OK");
-      }
-
+      // Access Firestore and update coins for the user
       const userRef = db.collection("users").doc(uid);
       const user = await userRef.get();
 
       if (!user.exists) {
-        await userRef.set({
-          coins: amount
-        });
+        // Create new user with coins
+        await userRef.set({ coins: amount });
       } else {
+        // Update existing user coins
         let oldCoins = user.data().coins || 0;
-
-        await userRef.update({
-          coins: oldCoins + amount
-        });
+        await userRef.update({ coins: oldCoins + amount });
       }
 
-      console.log("💰 Coins Added:", amount);
+      console.log("Coins Added ✔️");
     }
 
     res.send("OK");
-
-  } catch (err) {
-    console.log("Webhook Error:", err.message);
-    res.status(500).send("Error");
+  } catch (error) {
+    console.error("Error in webhook processing:", error);
+    res.status(500).send("Error processing webhook");
   }
 });
 
-/* ---------------- PORT ---------------- */
+/* ---------------- START SERVER ---------------- */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("🚀 Server Running on Port", PORT);
+  console.log(`Server Running on port ${PORT}`);
 });
