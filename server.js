@@ -7,7 +7,7 @@ const qs = require("querystring");
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json()); // For parsing application/json
 
 /* ---------------- FIREBASE INIT ---------------- */
 let db;
@@ -79,9 +79,9 @@ app.post("/create-order", async (req, res) => {
 
 /* ---------------- WEBHOOK ---------------- */
 app.post("/webhook", async (req, res) => {
-  const data = req.body;
+  const data = req.body; // Get the webhook data from Pay0
 
-  console.log("Received Webhook Data:", data);  // Logs webhook data
+  console.log("Received Webhook Data:", data);  // Print the webhook data in logs
 
   try {
     if (data.status === "SUCCESS") {
@@ -104,9 +104,9 @@ app.post("/webhook", async (req, res) => {
       console.log("Coins Added ✔️");
     }
 
-    res.send("OK");
+    res.send("OK");  // Respond back to Pay0 with success
   } catch (error) {
-    console.error("Error in webhook processing:", error);
+    console.log("Error in webhook processing:", error);
     res.status(500).send("Error processing webhook");
   }
 });
