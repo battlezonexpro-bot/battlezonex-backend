@@ -1,3 +1,4 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
@@ -7,10 +8,11 @@ const qs = require("querystring");
 const app = express();
 
 app.use(cors());
-app.use(express.json()); // For parsing application/json
+app.use(express.json()); // Parses application/json
+app.use(express.urlencoded({ extended: true })); // <-- ADDED: Parses application/x-www-form-urlencoded from payment gateways
 
 /* ---------------- FIREBASE INIT ---------------- */
-let db;
+let db = null; // Initialize as null to check later safely
 
 try {
   if (process.env.FIREBASE_CONFIG) {
@@ -55,7 +57,7 @@ app.post("/create-order", async (req, res) => {
       user_token: PAY0_API_KEY,
       amount,
       order_id,
-      redirect_url: "https://battlezonex-backend.onrender.com/webhook",  // Webhook URL after payment
+      redirect_url: "https://battlezonex-backend.onrender.com/webhook",  // User gets redirected here
       remark1: uid,
       remark2: "BattleZoneX"
     };
@@ -77,34 +79,49 @@ app.post("/create-order", async (req, res) => {
   }
 });
 
-/* ---------------- WEBHOOK ---------------- */
-app.post("/webhook", async (req, res) => {
-  const data = req.body; // Get the webhook data from Pay0
+/* ---------------- WEBHOOK (POST & GET) ---------------- */
+// Use app.all so it catches POST (server webhook) and GET (user redirect)
+app.all("/webhook", async (req, res) => {
+  // If it's a GET request, the data might be in the URL query instead of the body
+  const data = req.method === "GET" ? req.query : req.body; 
 
-  console.log("Received Webhook Data:", data);  // Print the webhook data in logs
+  console.log(`Received Webhook Data via ${req.method}:`, data);
 
   try {
     if (data.status === "SUCCESS") {
-      const uid = data.remark1;   // User ID from webhook data
-      const amount = Number(data.amount);  // Amount to be added
+      const uid = data.remark1;   
+      const amount = Number(data.amount);  
 
-      // Access Firestore and update coins for the user
-      const userRef = db.collection("users").doc(uid);
-      const user = await userRef.get();
-
-      if (!user.exists) {
-        // Create new user with coins
-        await userRef.set({ coins: amount });
-      } else {
-        // Update existing user coins
-        let oldCoins = user.data().coins || 0;
-        await userRef.update({ coins: oldCoins + amount });
+      // Safety check: Ensure Firebase is actually connected before trying to write
+      if (!db) {
+        console.error("Database not initialized. Cannot update coins.");
+        return res.status(500).send("Database connection error");
       }
 
-      console.log("Coins Added ✔️");
+      // Safety check: Ensure we have a valid UID and Amount
+      if (uid && amount) {
+        const userRef = db.collection("users").doc(uid);
+        const user = await userRef.get();
+
+        if (!user.exists) {
+          await userRef.set({ coins: amount });
+        } else {
+          let oldCoins = user.data().coins || 0;
+          await userRef.update({ coins: oldCoins + amount });
+        }
+        console.log(`Coins Added ✔️ : ${amount} to User: ${uid}`);
+      } else {
+        console.log("Missing UID or Amount in webhook data");
+      }
     }
 
-    res.send("OK");  // Respond back to Pay0 with success
+    // If it was a GET redirect, send the user to a success screen or deep link
+    if (req.method === "GET") {
+      res.send("<h1>Payment Processed. You can return to the app now!</h1>");
+    } else {
+      res.send("OK"); // Acknowledge the POST webhook to Pay0
+    }
+    
   } catch (error) {
     console.log("Error in webhook processing:", error);
     res.status(500).send("Error processing webhook");
