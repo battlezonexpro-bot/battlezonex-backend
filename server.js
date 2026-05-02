@@ -1,4 +1,3 @@
-// server.js — BattleZoneX Backend (Pay0 Integration)
 const express = require("express");
 const cors    = require("cors");
 const admin   = require("firebase-admin");
@@ -42,7 +41,6 @@ app.get("/", (req, res) => res.send("🚀 BattleZoneX Backend Running"));
 
 /* ─────────────────────────────────────────────
    CREATE ORDER  ← Android calls this
-   Body: { uid, customer_mobile, customer_name, amount }
 ───────────────────────────────────────────── */
 app.post("/create-order", async (req, res) => {
   try {
@@ -52,7 +50,6 @@ app.post("/create-order", async (req, res) => {
       return res.status(400).json({ status: false, message: "Missing fields" });
     }
 
-    // Unique order_id — uid + timestamp
     const order_id = `BZX_${uid.slice(0, 8)}_${Date.now()}`;
 
     const payload = {
@@ -62,7 +59,7 @@ app.post("/create-order", async (req, res) => {
       amount:         String(amount),
       order_id,
       redirect_url:   `${BACKEND_URL}/webhook`,
-      remark1:        uid,          // Firebase UID — webhook mein use hoga
+      remark1:        uid,          
       remark2:        "BattleZoneX"
     };
 
@@ -72,9 +69,13 @@ app.post("/create-order", async (req, res) => {
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    // Pay0 returns { status: true, payment_url: "..." }
-    if (response.data && response.data.status === true) {
-      // Save pending order in Firestore (for duplicate check later)
+    console.log("📦 Raw Pay0 Response:", response.data); // LOG: Debugging ke liye zaroori hai
+
+    // ✅ FIXED: Check both root level and inside 'result' object for the payment URL
+    const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
+
+    if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
+      
       await db.collection("PendingOrders").doc(order_id).set({
         order_id,
         uid,
@@ -85,11 +86,14 @@ app.post("/create-order", async (req, res) => {
 
       return res.json({
         status:      true,
-        payment_url: response.data.payment_url,
+        payment_url: payUrl,
         order_id
       });
     } else {
-      return res.json({ status: false, message: response.data?.message || "Pay0 error" });
+      return res.json({ 
+        status: false, 
+        message: response.data?.message || "Payment URL missing from Pay0 response" 
+      });
     }
 
   } catch (err) {
@@ -99,8 +103,7 @@ app.post("/create-order", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   CHECK ORDER STATUS  ← Android poll karta hai
-   Body: { order_id }
+   CHECK ORDER STATUS
 ───────────────────────────────────────────── */
 app.post("/check-order-status", async (req, res) => {
   try {
@@ -121,7 +124,7 @@ app.post("/check-order-status", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   WEBHOOK  ← Pay0 server POST + user redirect GET
+   WEBHOOK
 ───────────────────────────────────────────── */
 app.all("/webhook", async (req, res) => {
   const data = req.method === "GET" ? req.query : req.body;
@@ -143,7 +146,6 @@ app.all("/webhook", async (req, res) => {
       const orderRef = db.collection("PendingOrders").doc(order_id);
       const orderDoc = await orderRef.get();
 
-      // ✅ DUPLICATE CHECK — agar pehle se credited hai toh skip
       if (orderDoc.exists && orderDoc.data().status === "CREDITED") {
         console.log(`Duplicate webhook ignored: ${order_id}`);
         return req.method === "GET"
@@ -151,27 +153,23 @@ app.all("/webhook", async (req, res) => {
           : res.send("OK");
       }
 
-      // Firestore transaction — atomic credit
-      const userRef = db.collection("Users").doc(uid);  // ← capital U, aapke app ke anusaar
+      const userRef = db.collection("Users").doc(uid); 
 
       await db.runTransaction(async (t) => {
         const userDoc = await t.get(userRef);
 
         if (!userDoc.exists) {
-          // Naya user — create with depositBalance
           t.set(userRef, { depositBalance: amount });
         } else {
           const current = userDoc.data().depositBalance || 0;
           t.update(userRef, { depositBalance: current + amount });
         }
 
-        // Order status update
         t.update(orderRef, {
           status:    "CREDITED",
           creditedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // Deposits collection mein bhi save karo (admin panel ke liye)
         const depositRef = db.collection("Deposits").doc(order_id);
         t.set(depositRef, {
           depositId:  order_id,
@@ -187,9 +185,7 @@ app.all("/webhook", async (req, res) => {
       console.log(`✅ ₹${amount} credited to User: ${uid}`);
     }
 
-    // GET = user redirect, POST = server webhook
     if (req.method === "GET") {
-      // Deep link se app mein wapas bhejo
       res.send(`
         <html>
           <head>
