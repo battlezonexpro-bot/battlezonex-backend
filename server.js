@@ -118,58 +118,74 @@ app.post("/check-order-status", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   BULLETPROOF WEBHOOK (POST & GET)
+   BULLETPROOF WEBHOOK (POST & GET WITH RACE CONDITION FIX)
 ───────────────────────────────────────────── */
 app.all("/webhook", async (req, res) => {
   const isGet = req.method === "GET";
   const data = isGet ? req.query : req.body;
   
-  console.log(`Webhook [${req.method}]:`, data);
+  console.log(`Webhook [${req.method}]:`, JSON.stringify(data));
 
   try {
-    // Pay0 alag-alag parameters bhejta hai POST aur GET mein
-    const order_id = data.order_id || data.client_txn_id;
+    const order_id = data.order_id || data.client_txn_id || data.txn_id;
 
     if (!order_id) {
+      console.log("❌ Webhook me order_id nahi mili.");
       if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=invalid_data"></html>`);
       return res.send("OK");
     }
 
-    if (!db) {
-      console.error("DB not initialized");
-      return res.status(500).send("DB error");
+    if (!db) return res.status(500).send("DB error");
+
+    // 🔥 FIX: GET Request (user redirect) ko 4 seconds delay karte hain 
+    // Taki gateway ka POST webhook pehle aakar DB update kar de
+    if (isGet) {
+      console.log(`⏳ Waiting 4s for order ${order_id} to prevent race condition...`);
+      await new Promise(resolve => setTimeout(resolve, 4000));
     }
 
     const orderRef = db.collection("PendingOrders").doc(order_id);
     const orderDoc = await orderRef.get();
 
-    // Order database mein na mile
     if (!orderDoc.exists) {
+      console.log(`❌ Order ${order_id} DB mein nahi mila.`);
       if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=order_not_found"></html>`);
       return res.send("OK");
     }
 
     const orderData = orderDoc.data();
 
-    // 1. Agar pehle se credit ho chuka hai, bas safely user ko app me bhejo
+    // Agar POST webhook pehle hi execute ho chuka hai (CREDITED)
     if (orderData.status === "CREDITED") {
       if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=success&order_id=${order_id}"></html>`);
       return res.send("OK");
     }
 
-    // 2. Proactive API Check: Hum Payload pe depend nahi rahenge, direct Pay0 se poochenge
+    // Agar abhi bhi CREDITED nahi hua toh API check karo
     const checkRes = await axios.post(
       "https://pay0.shop/api/check-order-status",
       qs.stringify({ user_token: PAY0_TOKEN, order_id }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    console.log(`Pay0 Real Verification for ${order_id}:`, checkRes.data);
+    console.log(`🔍 Pay0 API Verification for ${order_id}:`, JSON.stringify(checkRes.data));
 
-    const realStatus = checkRes.data.status; // Asli status from server
+    const apiData = checkRes.data || {};
+    let isSuccess = false;
 
-    // 3. Agar Asli status Success hai, Firebase ko Atomic update karo
-    if (realStatus === "SUCCESS" || realStatus === true) {
+    const mainStatus = String(apiData.status).toUpperCase();
+    const nestedStatus = apiData.result ? String(apiData.result.status).toUpperCase() : null;
+    const dataStatus = apiData.data ? String(apiData.data.status).toUpperCase() : null;
+
+    if (mainStatus === "SUCCESS" || nestedStatus === "SUCCESS" || dataStatus === "SUCCESS" || apiData.status === true) {
+        if (nestedStatus === "PENDING" || dataStatus === "PENDING" || mainStatus === "PENDING") {
+            isSuccess = false;
+        } else {
+            isSuccess = true;
+        }
+    }
+
+    if (isSuccess) {
       const uid = orderData.uid;
       const amount = Number(orderData.amount);
       const userRef = db.collection("Users").doc(uid);
@@ -178,34 +194,32 @@ app.all("/webhook", async (req, res) => {
         const userDoc = await t.get(userRef);
         const current = userDoc.exists ? (userDoc.data().depositBalance || 0) : 0;
 
-        // Balance aur PendingOrders dono ek sath update
         t.set(userRef, { depositBalance: current + amount }, { merge: true });
         t.update(orderRef, {
-          status:    "CREDITED",
+          status: "CREDITED",
           creditedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
         const depositRef = db.collection("Deposits").doc(order_id);
         t.set(depositRef, {
-          depositId:  order_id,
-          orderId:    order_id,
-          userId:     uid,
+          depositId: order_id,
+          orderId: order_id,
+          userId: uid,
           amount,
-          status:     "Confirmed",
-          gateway:    "Pay0",
-          timestamp:  Date.now()
+          status: "Confirmed",
+          gateway: "Pay0",
+          timestamp: Date.now()
         });
       });
 
       console.log(`✅ ₹${amount} Safely Credited to User: ${uid}`);
 
-      // Transaction poori hone ke baad app mein redirect karo
       if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=success&order_id=${order_id}"></html>`);
       return res.send("OK");
 
     } else {
-      // Payment Failed ya Pending
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=not_paid"></html>`);
+      console.log(`⏳ Payment either PENDING or FAILED for ${order_id}. Pay0 Status: ${mainStatus}`);
+      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=payment_incomplete"></html>`);
       return res.send("OK");
     }
 
