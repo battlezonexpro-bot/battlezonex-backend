@@ -35,6 +35,37 @@ const PAY0_TOKEN    = process.env.PAY0_API_KEY;
 const BACKEND_URL   = process.env.BACKEND_URL || "https://battlezonex-backend.onrender.com";
 
 /* ─────────────────────────────────────────────
+   HELPER: WebView Redirect HTML
+   (Meta tags Android WebView me fail hote hain, JS zaroori hai)
+───────────────────────────────────────────── */
+const sendAppRedirect = (res, status, order_id = "", reason = "") => {
+  const deepLink = `battlezonex://payment?status=${status}&order_id=${order_id}&reason=${reason}`;
+  res.send(`
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { font-family: sans-serif; text-align: center; margin-top: 40px; background: #f9f9f9; }
+          .loader { border: 4px solid #f3f3f3; border-top: 4px solid #00695C; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        </style>
+      </head>
+      <body>
+        <h3>Processing Payment...</h3>
+        <p>Please wait, taking you back to the app.</p>
+        <div class="loader"></div>
+        <script>
+          // Deep Link Redirect
+          setTimeout(function() {
+            window.location.href = "${deepLink}";
+          }, 500);
+        </script>
+      </body>
+    </html>
+  `);
+};
+
+/* ─────────────────────────────────────────────
    HOME
 ───────────────────────────────────────────── */
 app.get("/", (req, res) => res.send("🚀 BattleZoneX Backend Running"));
@@ -58,7 +89,8 @@ app.post("/create-order", async (req, res) => {
       user_token:     PAY0_TOKEN,
       amount:         String(amount),
       order_id,
-      redirect_url:   `${BACKEND_URL}/webhook`,
+      // 🔥 FIX 1: Explicitly pass order_id in redirect_url so GET webhook always finds it
+      redirect_url:   `${BACKEND_URL}/webhook?order_id=${order_id}`, 
       remark1:        uid,
       remark2:        "BattleZoneX"
     };
@@ -72,7 +104,6 @@ app.post("/create-order", async (req, res) => {
     const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
 
     if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
-      
       await db.collection("PendingOrders").doc(order_id).set({
         order_id,
         uid,
@@ -81,15 +112,10 @@ app.post("/create-order", async (req, res) => {
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      return res.json({
-        status:      true,
-        payment_url: payUrl,
-        order_id
-      });
+      return res.json({ status: true, payment_url: payUrl, order_id });
     } else {
       return res.json({ status: false, message: response.data?.message || "Gateway Error" });
     }
-
   } catch (err) {
     console.error("create-order error:", err.message);
     res.status(500).json({ status: false, message: "Server Error" });
@@ -97,28 +123,7 @@ app.post("/create-order", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   CHECK ORDER STATUS
-───────────────────────────────────────────── */
-app.post("/check-order-status", async (req, res) => {
-  try {
-    const { order_id } = req.body;
-    if (!order_id) return res.status(400).json({ status: false, message: "order_id required" });
-
-    const response = await axios.post(
-      "https://pay0.shop/api/check-order-status",
-      qs.stringify({ user_token: PAY0_TOKEN, order_id }),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
-
-    res.json(response.data);
-  } catch (err) {
-    console.error("check-order-status error:", err.message);
-    res.status(500).json({ status: false, message: "Server Error" });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   BULLETPROOF WEBHOOK (POST & GET WITH RACE CONDITION FIX)
+   BULLETPROOF WEBHOOK (POST & GET)
 ───────────────────────────────────────────── */
 app.all("/webhook", async (req, res) => {
   const isGet = req.method === "GET";
@@ -131,14 +136,13 @@ app.all("/webhook", async (req, res) => {
 
     if (!order_id) {
       console.log("❌ Webhook me order_id nahi mili.");
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=invalid_data"></html>`);
+      if (isGet) return sendAppRedirect(res, "failed", "", "invalid_data");
       return res.send("OK");
     }
 
     if (!db) return res.status(500).send("DB error");
 
-    // 🔥 FIX: GET Request (user redirect) ko 4 seconds delay karte hain 
-    // Taki gateway ka POST webhook pehle aakar DB update kar de
+    // 🔥 FIX 2: 4 second delay before checking to allow Pay0's system to update its DB
     if (isGet) {
       console.log(`⏳ Waiting 4s for order ${order_id} to prevent race condition...`);
       await new Promise(resolve => setTimeout(resolve, 4000));
@@ -149,7 +153,7 @@ app.all("/webhook", async (req, res) => {
 
     if (!orderDoc.exists) {
       console.log(`❌ Order ${order_id} DB mein nahi mila.`);
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=order_not_found"></html>`);
+      if (isGet) return sendAppRedirect(res, "failed", order_id, "order_not_found");
       return res.send("OK");
     }
 
@@ -157,11 +161,11 @@ app.all("/webhook", async (req, res) => {
 
     // Agar POST webhook pehle hi execute ho chuka hai (CREDITED)
     if (orderData.status === "CREDITED") {
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=success&order_id=${order_id}"></html>`);
+      if (isGet) return sendAppRedirect(res, "success", order_id, "");
       return res.send("OK");
     }
 
-    // Agar abhi bhi CREDITED nahi hua toh API check karo
+    // Abhi bhi CREDITED nahi hua toh API se check karo
     const checkRes = await axios.post(
       "https://pay0.shop/api/check-order-status",
       qs.stringify({ user_token: PAY0_TOKEN, order_id }),
@@ -173,15 +177,15 @@ app.all("/webhook", async (req, res) => {
     const apiData = checkRes.data || {};
     let isSuccess = false;
 
+    // 🔥 FIX 3: More reliable success check
     const mainStatus = String(apiData.status).toUpperCase();
-    const nestedStatus = apiData.result ? String(apiData.result.status).toUpperCase() : null;
-    const dataStatus = apiData.data ? String(apiData.data.status).toUpperCase() : null;
+    const nestedStatus = apiData.result ? String(apiData.result.status).toUpperCase() : "";
 
-    if (mainStatus === "SUCCESS" || nestedStatus === "SUCCESS" || dataStatus === "SUCCESS" || apiData.status === true) {
-        if (nestedStatus === "PENDING" || dataStatus === "PENDING" || mainStatus === "PENDING") {
-            isSuccess = false;
-        } else {
+    if (apiData.status === true || mainStatus === "SUCCESS") {
+        if (nestedStatus === "SUCCESS" || nestedStatus === "COMPLETED") {
             isSuccess = true;
+        } else if (!apiData.result) {
+            isSuccess = true; // No nested object, but main is true
         }
     }
 
@@ -214,18 +218,18 @@ app.all("/webhook", async (req, res) => {
 
       console.log(`✅ ₹${amount} Safely Credited to User: ${uid}`);
 
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=success&order_id=${order_id}"></html>`);
+      if (isGet) return sendAppRedirect(res, "success", order_id, "");
       return res.send("OK");
 
     } else {
-      console.log(`⏳ Payment either PENDING or FAILED for ${order_id}. Pay0 Status: ${mainStatus}`);
-      if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=payment_incomplete"></html>`);
+      console.log(`⏳ Payment PENDING or FAILED for ${order_id}.`);
+      if (isGet) return sendAppRedirect(res, "failed", order_id, "payment_incomplete");
       return res.send("OK");
     }
 
   } catch (err) {
     console.error("Robust Webhook error:", err.message);
-    if (isGet) return res.send(`<html><meta http-equiv="refresh" content="0;url=battlezonex://payment?status=failed&reason=server_error"></html>`);
+    if (isGet) return sendAppRedirect(res, "failed", "", "server_error");
     res.status(500).send("Error");
   }
 });
