@@ -22,21 +22,21 @@ try {
     db = admin.firestore();
     console.log("🔥 Firebase Connected");
   } else {
-    console.log("❌ FIREBASE_CONFIG missing");
+    console.log("❌ FIREBASE_CONFIG missing in environment variables.");
   }
 } catch (err) {
   console.log("Firebase Error:", err.message);
 }
 
 /* ─────────────────────────────────────────────
-   KEYS
+   KEYS & URLS
 ───────────────────────────────────────────── */
 const PAY0_TOKEN    = process.env.PAY0_API_KEY;
 const BACKEND_URL   = process.env.BACKEND_URL || "https://battlezonex-backend.onrender.com";
 
 /* ─────────────────────────────────────────────
    HELPER: WebView Redirect HTML
-   (Meta tags Android WebView me fail hote hain, JS zaroori hai)
+   (Android WebView me redirect successfully execute karwane ke liye)
 ───────────────────────────────────────────── */
 const sendAppRedirect = (res, status, order_id = "", reason = "") => {
   const deepLink = `battlezonex://payment?status=${status}&order_id=${order_id}&reason=${reason}`;
@@ -55,7 +55,7 @@ const sendAppRedirect = (res, status, order_id = "", reason = "") => {
         <p>Please wait, taking you back to the app.</p>
         <div class="loader"></div>
         <script>
-          // Deep Link Redirect
+          // Deep Link Redirect Script
           setTimeout(function() {
             window.location.href = "${deepLink}";
           }, 500);
@@ -66,12 +66,12 @@ const sendAppRedirect = (res, status, order_id = "", reason = "") => {
 };
 
 /* ─────────────────────────────────────────────
-   HOME
+   HOME API
 ───────────────────────────────────────────── */
 app.get("/", (req, res) => res.send("🚀 BattleZoneX Backend Running"));
 
 /* ─────────────────────────────────────────────
-   CREATE ORDER
+   CREATE ORDER (App se call hoga)
 ───────────────────────────────────────────── */
 app.post("/create-order", async (req, res) => {
   try {
@@ -89,7 +89,7 @@ app.post("/create-order", async (req, res) => {
       user_token:     PAY0_TOKEN,
       amount:         String(amount),
       order_id,
-      // 🔥 FIX 1: Explicitly pass order_id in redirect_url so GET webhook always finds it
+      // URL me order_id pass kar rahe hain taaki GET webhook usko read kar sake
       redirect_url:   `${BACKEND_URL}/webhook?order_id=${order_id}`, 
       remark1:        uid,
       remark2:        "BattleZoneX"
@@ -104,6 +104,8 @@ app.post("/create-order", async (req, res) => {
     const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
 
     if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
+      
+      // Order ko PendingOrders me save karo
       await db.collection("PendingOrders").doc(order_id).set({
         order_id,
         uid,
@@ -118,6 +120,27 @@ app.post("/create-order", async (req, res) => {
     }
   } catch (err) {
     console.error("create-order error:", err.message);
+    res.status(500).json({ status: false, message: "Server Error" });
+  }
+});
+
+/* ─────────────────────────────────────────────
+   CHECK ORDER STATUS API
+───────────────────────────────────────────── */
+app.post("/check-order-status", async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    if (!order_id) return res.status(400).json({ status: false, message: "order_id required" });
+
+    const response = await axios.post(
+      "https://pay0.shop/api/check-order-status",
+      qs.stringify({ user_token: PAY0_TOKEN, order_id }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+
+    res.json(response.data);
+  } catch (err) {
+    console.error("check-order-status error:", err.message);
     res.status(500).json({ status: false, message: "Server Error" });
   }
 });
@@ -142,7 +165,7 @@ app.all("/webhook", async (req, res) => {
 
     if (!db) return res.status(500).send("DB error");
 
-    // 🔥 FIX 2: 4 second delay before checking to allow Pay0's system to update its DB
+    // GET request (User app me wapas aa raha hai) ke liye 4 sec wait
     if (isGet) {
       console.log(`⏳ Waiting 4s for order ${order_id} to prevent race condition...`);
       await new Promise(resolve => setTimeout(resolve, 4000));
@@ -159,13 +182,13 @@ app.all("/webhook", async (req, res) => {
 
     const orderData = orderDoc.data();
 
-    // Agar POST webhook pehle hi execute ho chuka hai (CREDITED)
+    // Agar pehle hi CREDITED ho chuka hai (via POST webhook)
     if (orderData.status === "CREDITED") {
       if (isGet) return sendAppRedirect(res, "success", order_id, "");
       return res.send("OK");
     }
 
-    // Abhi bhi CREDITED nahi hua toh API se check karo
+    // Pay0 API se status verify karo
     const checkRes = await axios.post(
       "https://pay0.shop/api/check-order-status",
       qs.stringify({ user_token: PAY0_TOKEN, order_id }),
@@ -177,18 +200,25 @@ app.all("/webhook", async (req, res) => {
     const apiData = checkRes.data || {};
     let isSuccess = false;
 
-    // 🔥 FIX 3: More reliable success check
+    // 🔥 MAIN FIX: Check BOTH 'txnStatus' and 'status' from API response
     const mainStatus = String(apiData.status).toUpperCase();
-    const nestedStatus = apiData.result ? String(apiData.result.status).toUpperCase() : "";
+    
+    let nestedStatus = "";
+    if (apiData.result) {
+        nestedStatus = String(apiData.result.txnStatus || apiData.result.status || "").toUpperCase();
+    } else if (apiData.data) {
+        nestedStatus = String(apiData.data.txnStatus || apiData.data.status || "").toUpperCase();
+    }
 
     if (apiData.status === true || mainStatus === "SUCCESS") {
         if (nestedStatus === "SUCCESS" || nestedStatus === "COMPLETED") {
             isSuccess = true;
-        } else if (!apiData.result) {
-            isSuccess = true; // No nested object, but main is true
+        } else if (!apiData.result && !apiData.data) {
+            isSuccess = true; // Agar nested object nahi hai, but main status true hai
         }
     }
 
+    // Agar payment verified ho gayi
     if (isSuccess) {
       const uid = orderData.uid;
       const amount = Number(orderData.amount);
@@ -198,12 +228,16 @@ app.all("/webhook", async (req, res) => {
         const userDoc = await t.get(userRef);
         const current = userDoc.exists ? (userDoc.data().depositBalance || 0) : 0;
 
+        // Balance Update
         t.set(userRef, { depositBalance: current + amount }, { merge: true });
+        
+        // Mark Order as Credited
         t.update(orderRef, {
           status: "CREDITED",
           creditedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
+        // Add to Deposits Collection for History
         const depositRef = db.collection("Deposits").doc(order_id);
         t.set(depositRef, {
           depositId: order_id,
@@ -235,7 +269,7 @@ app.all("/webhook", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   START
+   START SERVER
 ───────────────────────────────────────────── */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
