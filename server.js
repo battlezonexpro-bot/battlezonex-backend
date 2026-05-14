@@ -1,4 +1,4 @@
-require("dotenv").config(); // FIXED: Changed 'Require' to 'require'
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
@@ -148,7 +148,7 @@ app.get("/", (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   MANUAL NOTIFICATION API (FIXED FOR ARRAYS & APP)
+   MANUAL NOTIFICATION API (WITH MANUAL DB FILTERING)
 ───────────────────────────────────────────── */
 app.all("/send-notification", async (req, res) => {
   try {
@@ -158,10 +158,7 @@ app.all("/send-notification", async (req, res) => {
     let exclude_uids = req.query.exclude_uids || req.body.exclude_uids;
 
     if (!title || !message) {
-      return res.status(400).json({
-        status: false,
-        message: "Missing title/message."
-      });
+      return res.status(400).json({ status: false, message: "Missing title/message." });
     }
 
     let parsedUids = [];
@@ -169,41 +166,46 @@ app.all("/send-notification", async (req, res) => {
 
     if (uids) {
       if (typeof uids === 'string') {
-        try { parsedUids = JSON.parse(uids); }
-        catch (e) { parsedUids = [uids]; }
-      } else if (Array.isArray(uids)) {
-        parsedUids = uids;
-      }
+        try { parsedUids = JSON.parse(uids); } catch (e) { parsedUids = [uids]; }
+      } else if (Array.isArray(uids)) { parsedUids = uids; }
     }
 
     if (exclude_uids) {
       if (typeof exclude_uids === 'string') {
-        try { parsedExcludeUids = JSON.parse(exclude_uids); }
-        catch (e) { parsedExcludeUids = [exclude_uids]; }
-      } else if (Array.isArray(exclude_uids)) {
-        parsedExcludeUids = exclude_uids;
-      }
+        try { parsedExcludeUids = JSON.parse(exclude_uids); } catch (e) { parsedExcludeUids = [exclude_uids]; }
+      } else if (Array.isArray(exclude_uids)) { parsedExcludeUids = exclude_uids; }
     }
 
+    // THE MAGIC FIX: If no UIDs are provided, it means BROADCAST to everyone EXCEPT exclude_uids.
+    // So we fetch all UIDs from Firestore, subtract exclude_uids, and send ONLY to the rest.
+    if (parsedUids.length === 0 && db != null) {
+      const usersSnap = await db.collection("Users").get();
+      let allUids = usersSnap.docs.map(doc => doc.id);
+
+      // Subtract excluded UIDs
+      if (parsedExcludeUids.length > 0) {
+         parsedUids = allUids.filter(uid => !parsedExcludeUids.includes(uid));
+      } else {
+         parsedUids = allUids; // Send to absolutely everyone
+      }
+
+      // Wipe exclude array because we already filtered them out manually
+      parsedExcludeUids = [];
+    }
+
+    // Now send the notification. Notice we are passing parsedUids (which now contains everyone EXCEPT creator)
     await sendNotification(
       title,
       message,
       parsedUids.length > 0 ? parsedUids : null,
-      parsedExcludeUids.length > 0 ? parsedExcludeUids : null
+      null // No need to use OneSignal's buggy exclude anymore
     );
 
-    res.json({
-      status: true,
-      message: "Notification Sent"
-    });
+    res.json({ status: true, message: "Notification Sent" });
 
   } catch (err) {
     console.log(err.message);
-
-    res.status(500).json({
-      status: false,
-      message: "Server Error"
-    });
+    res.status(500).json({ status: false, message: "Server Error" });
   }
 });
 
