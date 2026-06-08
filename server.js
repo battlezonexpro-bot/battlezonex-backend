@@ -23,9 +23,7 @@ try {
         JSON.parse(process.env.FIREBASE_CONFIG)
       )
     });
-
     db = admin.firestore();
-
     console.log("🔥 Firebase Connected");
   } else {
     console.log("❌ FIREBASE_CONFIG missing");
@@ -38,23 +36,23 @@ try {
    ENV VARIABLES
 ───────────────────────────────────────────── */
 const PAY0_TOKEN = process.env.PAY0_API_KEY;
-
-const BACKEND_URL =
-  process.env.BACKEND_URL ||
-  "https://battlezonex-backend.onrender.com";
-
+const BACKEND_URL = process.env.BACKEND_URL || "https://battlezonex-backend.onrender.com";
 const ONE_SIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
 const ONE_SIGNAL_API_KEY = process.env.ONESIGNAL_API_KEY;
 
 /* ─────────────────────────────────────────────
-   ONESIGNAL NOTIFICATION FUNCTION
+   ONESIGNAL NOTIFICATION FUNCTION (UPDATED)
 ───────────────────────────────────────────── */
-async function sendNotification(title, message, uids = null, exclude_uids = null) {
+async function sendNotification(title, message, uids = null, options = {}) {
   try {
     let payload = {
       app_id: ONE_SIGNAL_APP_ID,
       headings: { en: title },
-      contents: { en: message }
+      contents: { en: message },
+      android_accent_color: "FFE53935", // Khiladi Red Icon Color
+      priority: options.priority || 10,  // 10 means High Priority
+      big_picture: options.big_picture || "", // Banner Photo URL
+      url: options.url || ""                  // Notification Click Link
     };
 
     if (uids && uids.length > 0) {
@@ -62,11 +60,6 @@ async function sendNotification(title, message, uids = null, exclude_uids = null
       payload.target_channel = "push";
     } else {
       payload.included_segments = ["Total Subscriptions"];
-
-      if (exclude_uids && exclude_uids.length > 0) {
-        payload.target_channel = "push";
-        payload.exclude_aliases = { external_id: exclude_uids };
-      }
     }
 
     await axios.post(
@@ -80,7 +73,7 @@ async function sendNotification(title, message, uids = null, exclude_uids = null
       }
     );
 
-    console.log("✅ Notification Sent");
+    console.log("✅ High-Priority Notification Sent with Banner Support");
   } catch (err) {
     console.log(
       "❌ Notification Error:",
@@ -94,46 +87,22 @@ async function sendNotification(title, message, uids = null, exclude_uids = null
 ───────────────────────────────────────────── */
 const sendAppRedirect = (res, status, order_id = "", reason = "") => {
   const deepLink = `battlezonex://payment?status=${status}&order_id=${order_id}&reason=${reason}`;
-
   res.send(`
     <html>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-          body {
-            font-family: sans-serif;
-            text-align: center;
-            margin-top: 40px;
-            background: #f9f9f9;
-          }
-
-          .loader {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #00695C;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 20px auto;
-          }
-
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
+          body { font-family: sans-serif; text-align: center; margin-top: 40px; background: #f9f9f9; }
+          .loader { border: 4px solid #f3f3f3; border-top: 4px solid #00695C; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         </style>
       </head>
-
       <body>
         <h3>Processing Payment...</h3>
         <p>Please wait...</p>
-
         <div class="loader"></div>
-
         <script>
-          setTimeout(function() {
-            window.location.href = "${deepLink}";
-          }, 500);
+          setTimeout(function() { window.location.href = "${deepLink}"; }, 500);
         </script>
       </body>
     </html>
@@ -144,16 +113,20 @@ const sendAppRedirect = (res, status, order_id = "", reason = "") => {
    HOME
 ───────────────────────────────────────────── */
 app.get("/", (req, res) => {
-  res.send("🚀 BattleZoneX Backend Running");
+  res.send("🚀 BattleZoneX Production Backend Running");
 });
 
 /* ─────────────────────────────────────────────
-   MANUAL NOTIFICATION API (WITH MANUAL DB FILTERING)
+   MANUAL NOTIFICATION API (UPDATED FOR BANNERS)
 ───────────────────────────────────────────── */
 app.all("/send-notification", async (req, res) => {
   try {
     const title = req.query.title || req.body.title;
     const message = req.query.message || req.body.message;
+    const big_picture = req.query.big_picture || req.body.big_picture; 
+    const url = req.query.url || req.body.url;
+    const priority = req.query.priority || req.body.priority;
+    
     let uids = req.query.uids || req.body.uids;
     let exclude_uids = req.query.exclude_uids || req.body.exclude_uids;
 
@@ -176,29 +149,22 @@ app.all("/send-notification", async (req, res) => {
       } else if (Array.isArray(exclude_uids)) { parsedExcludeUids = exclude_uids; }
     }
 
-    // THE MAGIC FIX: If no UIDs are provided, it means BROADCAST to everyone EXCEPT exclude_uids.
-    // So we fetch all UIDs from Firestore, subtract exclude_uids, and send ONLY to the rest.
     if (parsedUids.length === 0 && db != null) {
       const usersSnap = await db.collection("Users").get();
       let allUids = usersSnap.docs.map(doc => doc.id);
-
-      // Subtract excluded UIDs
       if (parsedExcludeUids.length > 0) {
          parsedUids = allUids.filter(uid => !parsedExcludeUids.includes(uid));
       } else {
-         parsedUids = allUids; // Send to absolutely everyone
+         parsedUids = allUids; 
       }
-
-      // Wipe exclude array because we already filtered them out manually
       parsedExcludeUids = [];
     }
 
-    // Now send the notification. Notice we are passing parsedUids (which now contains everyone EXCEPT creator)
     await sendNotification(
       title,
       message,
       parsedUids.length > 0 ? parsedUids : null,
-      null // No need to use OneSignal's buggy exclude anymore
+      { big_picture, url, priority }
     );
 
     res.json({ status: true, message: "Notification Sent" });
@@ -215,16 +181,10 @@ app.all("/send-notification", async (req, res) => {
 app.post("/create-order", async (req, res) => {
   try {
     const { uid, customer_mobile, customer_name, amount } = req.body;
-
     if (!uid || !amount || !customer_mobile) {
-      return res.status(400).json({
-        status: false,
-        message: "Missing fields"
-      });
+      return res.status(400).json({ status: false, message: "Missing fields" });
     }
-
     const order_id = `BZX_${uid.slice(0, 8)}_${Date.now()}`;
-
     const payload = {
       customer_mobile,
       customer_name: customer_name || "Player",
@@ -235,51 +195,23 @@ app.post("/create-order", async (req, res) => {
       remark1: uid,
       remark2: "BattleZoneX"
     };
-
     const response = await axios.post(
       "https://pay0.shop/api/create-order",
       qs.stringify(payload),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
-
-    const payUrl =
-      response.data.payment_url ||
-      (response.data.result && response.data.result.payment_url);
-
-    if (
-      response.data &&
-      (response.data.status === true || response.data.status === "SUCCESS") &&
-      payUrl
-    ) {
+    const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
+    if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
       await db.collection("PendingOrders").doc(order_id).set({
-        order_id,
-        uid,
-        amount: Number(amount),
-        status: "PENDING",
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
+        order_id, uid, amount: Number(amount), status: "PENDING", createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
-
-      return res.json({
-        status: true,
-        payment_url: payUrl,
-        order_id
-      });
+      return res.json({ status: true, payment_url: payUrl, order_id });
     } else {
-      return res.json({
-        status: false,
-        message: response.data?.message || "Gateway Error"
-      });
+      return res.json({ status: false, message: response.data?.message || "Gateway Error" });
     }
   } catch (err) {
     console.error("create-order error:", err.message);
-    res.status(500).json({
-      status: false,
-      message: "Server Error"
-    });
+    res.status(500).json({ status: false, message: "Server Error" });
   }
 });
 
@@ -289,34 +221,16 @@ app.post("/create-order", async (req, res) => {
 app.post("/check-order-status", async (req, res) => {
   try {
     const { order_id } = req.body;
-
-    if (!order_id) {
-      return res.status(400).json({
-        status: false,
-        message: "order_id required"
-      });
-    }
-
+    if (!order_id) return res.status(400).json({ status: false, message: "order_id required" });
     const response = await axios.post(
       "https://pay0.shop/api/check-order-status",
-      qs.stringify({
-        user_token: PAY0_TOKEN,
-        order_id
-      }),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }
+      qs.stringify({ user_token: PAY0_TOKEN, order_id }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
-
     res.json(response.data);
   } catch (err) {
     console.error("check-order-status error:", err.message);
-    res.status(500).json({
-      status: false,
-      message: "Server Error"
-    });
+    res.status(500).json({ status: false, message: "Server Error" });
   }
 });
 
@@ -326,117 +240,60 @@ app.post("/check-order-status", async (req, res) => {
 app.all("/webhook", async (req, res) => {
   const isGet = req.method === "GET";
   const data = isGet ? req.query : req.body;
-
   console.log(`Webhook [${req.method}]:`, JSON.stringify(data));
-
   try {
     const order_id = data.order_id || data.client_txn_id || data.txn_id;
-
     if (!order_id) {
       if (isGet) return sendAppRedirect(res, "failed", "", "invalid_data");
       return res.send("OK");
     }
-
-    if (!db) {
-      return res.status(500).send("DB error");
-    }
-
-    if (isGet) {
-      await new Promise(resolve => setTimeout(resolve, 4000));
-    }
-
+    if (!db) return res.status(500).send("DB error");
+    if (isGet) await new Promise(resolve => setTimeout(resolve, 4000));
     const orderRef = db.collection("PendingOrders").doc(order_id);
     const orderDoc = await orderRef.get();
-
     if (!orderDoc.exists) {
       if (isGet) return sendAppRedirect(res, "failed", order_id, "order_not_found");
       return res.send("OK");
     }
-
     const orderData = orderDoc.data();
-
     if (orderData.status === "CREDITED") {
       if (isGet) return sendAppRedirect(res, "success", order_id, "");
       return res.send("OK");
     }
-
     const checkRes = await axios.post(
       "https://pay0.shop/api/check-order-status",
-      qs.stringify({
-        user_token: PAY0_TOKEN,
-        order_id
-      }),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }
+      qs.stringify({ user_token: PAY0_TOKEN, order_id }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
-
     const apiData = checkRes.data || {};
     let isSuccess = false;
     const mainStatus = String(apiData.status).toUpperCase();
     let nestedStatus = "";
-
-    if (apiData.result) {
-      nestedStatus = String(apiData.result.txnStatus || apiData.result.status || "").toUpperCase();
-    } else if (apiData.data) {
-      nestedStatus = String(apiData.data.txnStatus || apiData.data.status || "").toUpperCase();
-    }
-
+    if (apiData.result) nestedStatus = String(apiData.result.txnStatus || apiData.result.status || "").toUpperCase();
+    else if (apiData.data) nestedStatus = String(apiData.data.txnStatus || apiData.data.status || "").toUpperCase();
     if (apiData.status === true || mainStatus === "SUCCESS") {
-      if (nestedStatus === "SUCCESS" || nestedStatus === "COMPLETED") {
-        isSuccess = true;
-      } else if (!apiData.result && !apiData.data) {
-        isSuccess = true;
-      }
+      if (nestedStatus === "SUCCESS" || nestedStatus === "COMPLETED") isSuccess = true;
+      else if (!apiData.result && !apiData.data) isSuccess = true;
     }
-
     if (isSuccess) {
       const uid = orderData.uid;
       const amount = Number(orderData.amount);
       const userRef = db.collection("Users").doc(uid);
-
       await db.runTransaction(async (t) => {
         const userDoc = await t.get(userRef);
         const current = userDoc.exists ? (userDoc.data().depositBalance || 0) : 0;
-
         t.set(userRef, { depositBalance: current + amount }, { merge: true });
-
-        t.update(orderRef, {
-          status: "CREDITED",
-          creditedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
+        t.update(orderRef, { status: "CREDITED", creditedAt: admin.firestore.FieldValue.serverTimestamp() });
         const depositRef = db.collection("Deposits").doc(order_id);
-        t.set(depositRef, {
-          depositId: order_id,
-          orderId: order_id,
-          userId: uid,
-          amount,
-          status: "Confirmed",
-          gateway: "Pay0",
-          timestamp: Date.now()
-        });
+        t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: "Pay0", timestamp: Date.now() });
       });
-
-      console.log(`✅ ₹${amount} credited to ${uid}`);
-
-      /* NOTIFICATION */
-      await sendNotification(
-        "Deposit Successful 💰",
-        `₹${amount} added successfully to wallet`,
-        [uid]
-      );
-
+      await sendNotification("Deposit Successful 💰", `₹${amount} added successfully to wallet`, [uid]);
       if (isGet) return sendAppRedirect(res, "success", order_id, "");
       return res.send("OK");
-
     } else {
       if (isGet) return sendAppRedirect(res, "failed", order_id, "payment_incomplete");
       return res.send("OK");
     }
-
   } catch (err) {
     console.error("Webhook error:", err.message);
     if (isGet) return sendAppRedirect(res, "failed", "", "server_error");
@@ -448,7 +305,4 @@ app.all("/webhook", async (req, res) => {
    START SERVER
 ───────────────────────────────────────────── */
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => { console.log(`🚀 Server running on port ${PORT}`); });
