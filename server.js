@@ -38,7 +38,7 @@ const ONE_SIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
 const ONE_SIGNAL_API_KEY = process.env.ONESIGNAL_API_KEY;
 
 /* ─────────────────────────────────────────────
-   ONESIGNAL FUNCTION (HIGH PRIORITY + BANNER)
+   ONESIGNAL FUNCTION (ULTRA HIGH PRIORITY)
 ───────────────────────────────────────────── */
 async function sendNotification(title, message, uids = null, options = {}) {
   try {
@@ -47,10 +47,15 @@ async function sendNotification(title, message, uids = null, options = {}) {
       headings: { en: title },
       contents: { en: message },
       android_accent_color: "FFE53935", 
-      priority: 10, 
+      priority: 10,               // High Priority for FCM
+      android_visibility: 1,      // 1 = Public (Visible on lock screen)
+      ttl: 3600,                  // 1 hour survival
       big_picture: options.big_picture || options.image || "", 
       url: options.url || ""
     };
+
+    payload.android_led_color = "FFE53935";
+    payload.android_sound = "notification";
 
     if (uids && uids.length > 0) {
       payload.include_aliases = { external_id: uids };
@@ -65,7 +70,7 @@ async function sendNotification(title, message, uids = null, options = {}) {
         "Content-Type": "application/json"
       }
     });
-    console.log("✅ Push Sent Successfully");
+    console.log("✅ Ultra High-Priority Push Sent");
   } catch (err) {
     console.log("❌ Push Error:", err.response?.data || err.message);
   }
