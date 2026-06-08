@@ -46,6 +46,7 @@ async function sendNotification(title, message, uids = null, options = {}) {
       app_id: ONE_SIGNAL_APP_ID,
       headings: { en: title },
       contents: { en: message },
+      android_channel_id: "f9b63a0c-c679-44ed-8fe6-ab6039119031", // The specific channel for Heads-Up
       android_accent_color: "FFE53935", 
       priority: 10,               // High Priority for FCM
       android_visibility: 1,      // 1 = Public (Visible on lock screen)
@@ -70,7 +71,7 @@ async function sendNotification(title, message, uids = null, options = {}) {
         "Content-Type": "application/json"
       }
     });
-    console.log("✅ Ultra High-Priority Push Sent");
+    console.log("✅ Ultra High-Priority Push Sent (Channel Bound)");
   } catch (err) {
     console.log("❌ Push Error:", err.response?.data || err.message);
   }
