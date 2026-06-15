@@ -182,7 +182,7 @@ app.all("/webhook", async (req, res) => {
         const depositRef = db.collection("Deposits").doc(order_id);
         t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: "Pay0", timestamp: Date.now() });
       });
-      await sendNotification("Deposit Successful 💰", `₹${amount} added successfully to wallet`, [uid]);
+      await sendNotification("Deposit Successful 🤑", `₹${amount} added successfully to wallet`, [uid]);
     }
     res.send("OK");
   } catch (err) { res.status(500).send("Error"); }
@@ -346,4 +346,3 @@ app.post("/request-withdrawal", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-         
