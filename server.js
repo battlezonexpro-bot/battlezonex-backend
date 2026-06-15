@@ -212,7 +212,8 @@ app.post("/join-match", async (req, res) => {
       matchDataForNotif = mData;
       if (mData.status !== "Upcoming") throw new Error("This match is no longer upcoming!");
 
-      let remFee = mData.entryFee || 0;
+      let initialFee = mData.entryFee || 0;
+      let remFee = initialFee;
       let uData = userDoc.data();
       let bon = uData.bonusBalance || 0;
       let dep = uData.depositBalance || 0;
@@ -240,9 +241,26 @@ app.post("/join-match", async (req, res) => {
       }
 
       t.update(userRef, { bonusBalance: bon, depositBalance: dep, winningBalance: win });
-      players.push(uid);
-      igns.push(ign);
+      const emptyIdx = players.findIndex(p => !p || p === "" || p === "Player");
+      if (emptyIdx !== -1) {
+        players[emptyIdx] = uid;
+        igns[emptyIdx] = ign;
+      } else {
+        players.push(uid);
+        igns.push(ign);
+      }
       t.update(matchRef, { joinedSpots: joined + 1, joinedPlayers: players, joinedIGNs: igns });
+      
+      const txRef = db.collection("Transactions").doc();
+      t.set(txRef, {
+        userId: uid,
+        uid: uid,
+        amount: initialFee,
+        type: "Match Join",
+        title: mData.title || "Match",
+        status: "Success",
+        timestamp: Date.now()
+      });
     });
 
     res.json({ status: true, message: "Joined successfully!" });
@@ -328,3 +346,4 @@ app.post("/request-withdrawal", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+         
