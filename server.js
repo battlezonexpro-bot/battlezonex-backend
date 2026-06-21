@@ -46,16 +46,20 @@ async function sendNotification(title, message, uids = null, options = {}) {
       app_id: ONE_SIGNAL_APP_ID,
       headings: { en: title },
       contents: { en: message },
+      subtitle: { en: options.subtitle || "BattlexClash" },
       android_channel_id: "f9b63a0c-c679-44ed-8fe6-ab6039119031", 
-      android_accent_color: "FFE53935", 
+      android_accent_color: "FFD4AF37", // Premium Gold Color
       priority: 10,               
       android_visibility: 1,      
       ttl: 3600,                  
       big_picture: options.big_picture || options.image || "", 
-      url: options.url || ""
+      large_icon: options.large_icon || "https://res.cloudinary.com/dqai5ofpf/image/upload/v1/logo_premium", // Use your logo link here if you have one
+      small_icon: "ic_stat_onesignal_default",
+      url: options.url || "",
+      buttons: options.buttons || [{"id": "open", "text": "🔥 Play Now", "icon": ""}]
     };
 
-    payload.android_led_color = "FFE53935";
+    payload.android_led_color = "FFD4AF37"; // Matching Gold LED
     payload.android_sound = "notification";
 
     if (uids && uids.length > 0) {
@@ -137,6 +141,9 @@ app.post("/create-order", async (req, res) => {
     if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
       await db.collection("PendingOrders").doc(order_id).set({
         order_id, uid, amount: Number(amount), status: "PENDING", createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      await db.collection("Deposits").doc(order_id).set({
+        depositId: order_id, orderId: order_id, userId: uid, amount: Number(amount), status: "Pending", type: "Deposit", timestamp: Date.now()
       });
       return res.json({ status: true, payment_url: payUrl, order_id });
     } else {
@@ -299,6 +306,48 @@ app.post("/claim-spin", async (req, res) => {
       });
     });
     res.json({ status: true, message: `You won ₹${bonusAmount} Bonus!` });
+  } catch(err) {
+    res.status(400).json({ status: false, message: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────
+   NEW: IN-APP TRANSFER (SECURE)
+───────────────────────────────────────────── */
+app.post("/in-app-transfer", async (req, res) => {
+  const { uid, amount } = req.body;
+  if (!uid || !amount) return res.status(400).json({ status: false, message: "Missing fields" });
+
+  try {
+    const uRef = db.collection("Users").doc(uid);
+
+    await db.runTransaction(async (t) => {
+      const uSnap = await t.get(uRef);
+      if (!uSnap.exists) throw new Error("User not found");
+      const winBal = uSnap.data().winningBalance || 0;
+      const depBal = uSnap.data().depositBalance || 0;
+      
+      if (winBal < amount) throw new Error("Insufficient Winning Balance!");
+      
+      t.update(uRef, { 
+        winningBalance: winBal - Number(amount),
+        depositBalance: depBal + Number(amount)
+      });
+      
+      const txRef = db.collection("Deposits").doc();
+      t.set(txRef, {
+        depositId: txRef.id,
+        orderId: txRef.id,
+        userId: uid,
+        amount: Number(amount),
+        status: "Confirmed",
+        type: "In-App Transfer",
+        gateway: "Internal",
+        timestamp: Date.now()
+      });
+    });
+
+    res.json({ status: true, message: "Transferred Successfully to Deposit Wallet" });
   } catch(err) {
     res.status(400).json({ status: false, message: err.message });
   }
