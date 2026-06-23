@@ -120,7 +120,7 @@ app.all("/send-notification", async (req, res) => {
         message: message,
         image: big_picture || "",
         userId: (parsedUids && parsedUids.length > 0) ? parsedUids[0] : "",
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
+        timestamp: Date.now()
       });
     }
 
