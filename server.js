@@ -69,6 +69,10 @@ async function sendNotification(title, message, uids = null, options = {}) {
       payload.android_group = options.android_group;
       payload.android_group_message = options.android_group_message || "$[notif_count] new messages";
     }
+    
+    if (options.collapse_id) {
+      payload.collapse_id = options.collapse_id;
+    }
 
     payload.android_led_color = "FFD4AF37";
     payload.android_sound = "notification";
