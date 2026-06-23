@@ -148,9 +148,6 @@ app.post("/create-order", async (req, res) => {
       await db.collection("PendingOrders").doc(order_id).set({
         order_id, uid, amount: Number(amount), status: "PENDING", createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
-      await db.collection("Deposits").doc(order_id).set({
-        depositId: order_id, orderId: order_id, userId: uid, amount: Number(amount), status: "Pending", type: "Deposit", timestamp: Date.now()
-      });
       return res.json({ status: true, payment_url: payUrl, order_id });
     } else {
       return res.json({ status: false, message: response.data?.message || "Gateway Error" });
@@ -215,6 +212,51 @@ app.all("/webhook", async (req, res) => {
 /* ─────────────────────────────────────────────
    NEW: JOIN MATCH (SECURE)
 ───────────────────────────────────────────── */
+app.post("/change-slot", async (req, res) => {
+  const { matchId, uid, targetSlotIndex } = req.body;
+  if (!matchId || !uid || targetSlotIndex === undefined) return res.status(400).json({ status: false, message: "Missing fields" });
+
+  try {
+    const matchQuery = await db.collection("Matches").where("matchId", "==", matchId).get();
+    if (matchQuery.empty) return res.status(400).json({ status: false, message: "Match not found" });
+    const matchRef = matchQuery.docs[0].ref;
+
+    await db.runTransaction(async (t) => {
+      const matchDoc = await t.get(matchRef);
+      if (!matchDoc.exists) throw new Error("Match not found");
+      const mData = matchDoc.data();
+
+      if (mData.status !== "Upcoming") throw new Error("Match is no longer upcoming");
+
+      let players = Array.isArray(mData.joinedPlayers) ? [...mData.joinedPlayers] : [];
+      let igns = Array.isArray(mData.joinedIGNs) ? [...mData.joinedIGNs] : [];
+
+      const myIndex = players.indexOf(uid);
+      if (myIndex === -1) throw new Error("You have not joined this match");
+
+      while (players.length <= targetSlotIndex) {
+        players.push("");
+        igns.push("");
+      }
+
+      const tempUid = players[targetSlotIndex];
+      const tempIgn = igns[targetSlotIndex];
+
+      players[targetSlotIndex] = uid;
+      igns[targetSlotIndex] = igns[myIndex];
+
+      players[myIndex] = tempUid || "";
+      igns[myIndex] = tempIgn || "";
+
+      t.update(matchRef, { joinedPlayers: players, joinedIGNs: igns });
+    });
+
+    res.json({ status: true, message: "Slot changed successfully!" });
+  } catch (error) {
+    res.status(500).json({ status: false, message: error.message });
+  }
+});
+
 app.post("/join-match", async (req, res) => {
   const { matchId, uid, ign } = req.body;
   if (!matchId || !uid || !ign) return res.status(400).json({ status: false, message: "Missing fields" });
