@@ -65,6 +65,11 @@ async function sendNotification(title, message, uids = null, options = {}) {
       ]
     };
 
+    if (options.android_group) {
+      payload.android_group = options.android_group;
+      payload.android_group_message = options.android_group_message || "$[notif_count] new messages";
+    }
+
     payload.android_led_color = "FFD4AF37";
     payload.android_sound = "notification";
 
@@ -112,7 +117,7 @@ app.all("/send-notification", async (req, res) => {
       } else if (Array.isArray(inputUids)) { parsedUids = inputUids; }
     }
 
-    await sendNotification(title, message, parsedUids, { big_picture, url });
+    await sendNotification(title, message, parsedUids, { big_picture, url, ...req.body });
 
     if (db) {
       await db.collection("Notifications").add({
@@ -120,7 +125,7 @@ app.all("/send-notification", async (req, res) => {
         message: message,
         image: big_picture || "",
         userId: (parsedUids && parsedUids.length > 0) ? parsedUids[0] : "",
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
+        timestamp: Date.now()
       });
     }
 
