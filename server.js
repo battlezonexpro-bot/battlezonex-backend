@@ -210,8 +210,30 @@ app.all("/webhook", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
-   NEW: JOIN MATCH (SECURE)
+   NEW: GET EMAIL FROM PHONE (SECURE)
 ───────────────────────────────────────────── */
+app.post("/get-user-email", async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ status: false, message: "Missing phone" });
+
+    const snapshot = await db.collection("Users").where("phone", "==", phone).get();
+    
+    if (snapshot.empty) {
+      return res.status(404).json({ status: false, message: "Mobile number not registered" });
+    }
+
+    const userData = snapshot.docs[0].data();
+    if (!userData.email) {
+      return res.status(404).json({ status: false, message: "No email associated with this mobile number" });
+    }
+
+    return res.json({ status: true, email: userData.email });
+  } catch (error) {
+    return res.status(500).json({ status: false, message: error.message });
+  }
+});
+
 app.post("/change-slot", async (req, res) => {
   const { matchId, uid, targetSlotIndex } = req.body;
   if (!matchId || !uid || targetSlotIndex === undefined) return res.status(400).json({ status: false, message: "Missing fields" });
