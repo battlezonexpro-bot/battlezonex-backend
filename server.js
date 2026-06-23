@@ -113,7 +113,43 @@ app.all("/send-notification", async (req, res) => {
     }
 
     await sendNotification(title, message, parsedUids, { big_picture, url });
-    res.json({ status: true, message: "Notification Processed" });
+
+    if (db) {
+      await db.collection("Notifications").add({
+        title: title,
+        message: message,
+        image: big_picture || "",
+        userId: (parsedUids && parsedUids.length > 0) ? parsedUids[0] : "",
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
+    res.json({ status: true, message: "Notification Processed and Saved" });
+  } catch (err) {
+    res.status(500).json({ status: false, message: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────
+   SUPPORT MESSAGE API (ADMIN BYPASS)
+───────────────────────────────────────────── */
+app.post("/send-support-message", async (req, res) => {
+  try {
+    const { ticketId, msg } = req.body;
+    if (!ticketId || !msg) return res.status(400).json({ status: false, message: "Missing ticketId or msg" });
+
+    if (db) {
+      await db.collection("SupportTickets").doc(ticketId).collection("Messages").add({
+        ...msg,
+        timestamp: msg.timestamp || Date.now()
+      });
+      // Optionally update the ticket's last updated time
+      await db.collection("SupportTickets").doc(ticketId).update({
+        updatedAt: Date.now()
+      });
+    }
+
+    res.json({ status: true, message: "Message Sent" });
   } catch (err) {
     res.status(500).json({ status: false, message: err.message });
   }
