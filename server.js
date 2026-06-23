@@ -306,7 +306,7 @@ app.post("/join-match", async (req, res) => {
           title: "Player Joined!",
           message: `${ign} joined your match: ${matchDataForNotif.title}`,
           timestamp: Date.now(),
-          uid: matchDataForNotif.hostUid
+          userId: matchDataForNotif.hostUid
        });
     }
 
