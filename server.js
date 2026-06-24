@@ -55,15 +55,20 @@ async function sendNotification(title, message, uids = null, options = {}) {
       priority: 10,
       android_visibility: 1,
       ttl: 3600,
-      big_picture: options.big_picture || options.image || "",
       large_icon: options.large_icon || "https://res.cloudinary.com/dqai5ofpf/image/upload/v1/logo_premium",
       small_icon: "ic_stat_onesignal_default",
-      url: options.url || "",
       buttons: options.buttons || [
         { "id": "open_app",  "text": " Open App",    "icon": "" },
         { "id": "play_now",  "text": " Play Now",    "icon": "" }
       ]
     };
+
+    if (options.big_picture || options.image) {
+      payload.big_picture = options.big_picture || options.image;
+    }
+    if (options.url) {
+      payload.url = options.url;
+    }
 
     if (options.android_group) {
       payload.android_group = options.android_group;
