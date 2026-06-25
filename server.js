@@ -178,31 +178,66 @@ app.post("/create-order", async (req, res) => {
     if (!uid || !amount || !customer_mobile) return res.status(400).json({ status: false, message: "Missing fields" });
 
     const order_id = `BZX_${uid.slice(0, 8)}_${Date.now()}`;
-    const payload = {
-      customer_mobile,
-      customer_name: customer_name || "Player",
-      user_token: PAY0_TOKEN,
-      amount: String(amount),
-      order_id,
-      redirect_url: `${BACKEND_URL}/webhook?order_id=${order_id}`,
-      remark1: uid,
-      remark2: "BattlexClash"
-    };
+    
+    // Fetch active gateway from AppConfig
+    const configDoc = await db.collection("Settings").doc("AppConfig").get();
+    let gateway = "pay0shop";
+    if (configDoc.exists) {
+        const conf = configDoc.data();
+        if (conf.activePaymentGateway === "zapupi") gateway = "zapupi";
+    }
 
-    const response = await axios.post("https://pay0.shop/api/create-order", qs.stringify(payload), {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
-
-    const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
-    if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
-      await db.collection("PendingOrders").doc(order_id).set({
-        order_id, uid, amount: Number(amount), status: "PENDING", createdAt: admin.firestore.FieldValue.serverTimestamp()
+    if (gateway === "zapupi") {
+      const payload = {
+        zap_key: process.env.ZAP_KEY || "zap8c4caa67455ad02023545bda4398fa92",
+        order_id: order_id,
+        amount: String(amount),
+        customer_mobile: customer_mobile || "9876543210",
+        remark: `${uid} | BattlexClash`
+      };
+      
+      const response = await axios.post("https://pay.zapupi.com/api/create-order", payload, {
+        headers: { "Content-Type": "application/json" }
       });
-      return res.json({ status: true, payment_url: payUrl, order_id });
+      
+      const payUrl = response.data.payment_url;
+      if (response.data && response.data.status === "success" && payUrl) {
+        await db.collection("PendingOrders").doc(order_id).set({
+          order_id, uid, amount: Number(amount), status: "PENDING", gateway: "zapupi", createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return res.json({ status: true, payment_url: payUrl, order_id });
+      } else {
+        return res.json({ status: false, message: response.data?.message || "ZapUPI Error" });
+      }
     } else {
-      return res.json({ status: false, message: response.data?.message || "Gateway Error" });
+      // Pay0Shop Default
+      const payload = {
+        customer_mobile,
+        customer_name: customer_name || "Player",
+        user_token: PAY0_TOKEN,
+        amount: String(amount),
+        order_id,
+        redirect_url: `${BACKEND_URL}/webhook?order_id=${order_id}`,
+        remark1: uid,
+        remark2: "BattlexClash"
+      };
+
+      const response = await axios.post("https://pay0.shop/api/create-order", qs.stringify(payload), {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }
+      });
+
+      const payUrl = response.data.payment_url || (response.data.result && response.data.result.payment_url);
+      if (response.data && (response.data.status === true || response.data.status === "SUCCESS") && payUrl) {
+        await db.collection("PendingOrders").doc(order_id).set({
+          order_id, uid, amount: Number(amount), status: "PENDING", gateway: "pay0shop", createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return res.json({ status: true, payment_url: payUrl, order_id });
+      } else {
+        return res.json({ status: false, message: response.data?.message || "Pay0Shop Error" });
+      }
     }
   } catch (err) {
+    console.error(err);
     res.status(500).json({ status: false, message: "Server Error" });
   }
 });
@@ -214,21 +249,36 @@ app.all("/webhook", async (req, res) => {
   const data = req.method === "GET" ? req.query : req.body;
   try {
     const order_id = data.order_id || data.client_txn_id || data.txn_id;
-    if (!order_id) return res.send("OK");
+    if (!order_id) return res.status(200).json({ status: "ok" });
 
     const orderRef = db.collection("PendingOrders").doc(order_id);
     const orderDoc = await orderRef.get();
-    if (!orderDoc.exists) return res.send("OK");
+    if (!orderDoc.exists) return res.status(200).json({ status: "ok" });
 
     const orderData = orderDoc.data();
-    if (orderData.status === "CREDITED") return res.send("OK");
+    if (orderData.status === "CREDITED") return res.status(200).json({ status: "ok" });
 
-    const checkRes = await axios.post("https://pay0.shop/api/check-order-status", qs.stringify({ user_token: PAY0_TOKEN, order_id }), {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
+    let isSuccess = false;
 
-    const apiData = checkRes.data || {};
-    let isSuccess = (apiData.status === true || String(apiData.status).toUpperCase() === "SUCCESS");
+    if (orderData.gateway === "zapupi") {
+      if (data.status === "Success" || data.status === "success") {
+        const checkRes = await axios.post("https://pay.zapupi.com/api/order-status", { 
+          zap_key: process.env.ZAP_KEY || "zap8c4caa67455ad02023545bda4398fa92", 
+          order_id: order_id 
+        }, { headers: { "Content-Type": "application/json" } });
+        
+        if (checkRes.data && (checkRes.data.status === "Success" || checkRes.data.status === "success")) {
+          isSuccess = true;
+        }
+      }
+    } else {
+      // Pay0Shop
+      const checkRes = await axios.post("https://pay0.shop/api/check-order-status", qs.stringify({ user_token: PAY0_TOKEN, order_id }), {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }
+      });
+      const apiData = checkRes.data || {};
+      isSuccess = (apiData.status === true || String(apiData.status).toUpperCase() === "SUCCESS");
+    }
 
     if (isSuccess) {
       const uid = orderData.uid;
@@ -240,7 +290,7 @@ app.all("/webhook", async (req, res) => {
         t.set(userRef, { depositBalance: current + amount }, { merge: true });
         t.update(orderRef, { status: "CREDITED", creditedAt: admin.firestore.FieldValue.serverTimestamp() });
         const depositRef = db.collection("Deposits").doc(order_id);
-        t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: "Pay0", timestamp: Date.now() });
+        t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: orderData.gateway || "Auto", timestamp: Date.now() });
       });
       await sendNotification(
         "Payment Successful!",
@@ -248,15 +298,17 @@ app.all("/webhook", async (req, res) => {
         [uid],
         {
           subtitle: "💳 Transaction Confirmed — BattlexClash",
-          buttons: [
-            { id: "wallet",   text: "View Wallet",  icon: "" },
-            { id: "play_now", text: "Play Now",     icon: "" }
-          ]
+          bigPicture: "https://i.postimg.cc/85z11sQc/payment-success.jpg",
+          color: "#388E3C"
         }
       );
     }
-    res.send("OK");
-  } catch (err) { res.status(500).send("Error"); }
+    
+    return res.status(200).json({ status: "ok" });
+  } catch (err) {
+    console.error("Webhook Error:", err);
+    return res.status(200).json({ status: "ok" });
+  }
 });
 
 /* ─────────────────────────────────────────────
