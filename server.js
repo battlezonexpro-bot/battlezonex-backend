@@ -330,7 +330,7 @@ app.post("/change-slot", async (req, res) => {
 });
 
 app.post("/join-match", async (req, res) => {
-  const { matchId, uid, ign } = req.body;
+  const { matchId, uid, ign, slotIndex } = req.body;
   if (!matchId || !uid || !ign) return res.status(400).json({ status: false, message: "Missing fields" });
 
   try {
@@ -379,13 +379,25 @@ app.post("/join-match", async (req, res) => {
       }
 
       t.update(userRef, { bonusBalance: bon, depositBalance: dep, winningBalance: win });
-      const emptyIdx = players.findIndex(p => !p || p === "" || p === "Player");
-      if (emptyIdx !== -1) {
-        players[emptyIdx] = uid;
-        igns[emptyIdx] = ign;
+      if (slotIndex !== undefined && slotIndex !== null && slotIndex >= 0 && slotIndex < total) {
+        while (players.length <= slotIndex) {
+          players.push("");
+          igns.push("Player");
+        }
+        if (players[slotIndex] && players[slotIndex] !== "Player" && players[slotIndex] !== "") {
+          throw new Error("This slot is already taken! Please select another slot.");
+        }
+        players[slotIndex] = uid;
+        igns[slotIndex] = ign;
       } else {
-        players.push(uid);
-        igns.push(ign);
+        const emptyIdx = players.findIndex(p => !p || p === "" || p === "Player");
+        if (emptyIdx !== -1) {
+          players[emptyIdx] = uid;
+          igns[emptyIdx] = ign;
+        } else {
+          players.push(uid);
+          igns.push(ign);
+        }
       }
       t.update(matchRef, { joinedSpots: joined + 1, joinedPlayers: players, joinedIGNs: igns });
       
