@@ -193,7 +193,10 @@ app.post("/create-order", async (req, res) => {
         order_id: order_id,
         amount: String(amount),
         customer_mobile: customer_mobile || "9876543210",
-        remark: `${uid} | BattlexClash`
+        remark: `${uid} | BattlexClash`,
+        success_url: "https://zapupi.com/payment?s=s",
+        failed_url: "https://zapupi.com/payment?s=f",
+        timeout_url: "https://zapupi.com/payment?s=t"
       };
       
       const response = await axios.post("https://pay.zapupi.com/api/create-order", payload, {
