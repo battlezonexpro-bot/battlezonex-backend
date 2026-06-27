@@ -135,30 +135,12 @@ app.post("/api/auth/process-signup", async (req, res) => {
     if (refCode) {
       const q = await db.collection("Users").where("myReferralCode", "==", refCode.trim()).get();
       if (!q.empty) {
-        const referrerDoc = q.docs[0];
-        const rData = referrerDoc.data();
-        const hasPlayed = rData.hasPlayedMatch === true || String(rData.hasPlayedMatch) === "true" || (rData.matchesPlayed && rData.matchesPlayed > 0);
-        
-        if (hasPlayed) {
-          finalBonus = welcomeBonus + actualReferralBonus;
-          refereeRewarded = true;
-          referredBy = refCode.trim();
-          
-          // Reward Referrer
-          await referrerDoc.ref.update({
-            bonusBalance: admin.firestore.FieldValue.increment(actualReferralBonus)
-          });
-          
-          await db.collection("Transactions").add({
-            userId: referrerDoc.id,
-            uid: referrerDoc.id,
-            amount: actualReferralBonus,
-            type: "Referral Bonus",
-            title: "Referral Reward",
-            status: "Success",
-            timestamp: Date.now()
-          });
-        }
+        // Valid referral code found
+        finalBonus = welcomeBonus + actualReferralBonus;
+        refereeRewarded = true;
+        referredBy = refCode.trim();
+        // NOTE: We DO NOT pay the referrer here! 
+        // The referrer will be paid when this new user plays their first paid match.
       }
     }
     
