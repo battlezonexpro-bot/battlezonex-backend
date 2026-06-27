@@ -32,6 +32,66 @@ try {
   console.log("Firebase Error:", err.message);
 }
 
+// --- Background Auto-Referral Job ---
+setInterval(async () => {
+  try {
+    const configSnap = await db.collection("Settings").doc("AppConfig").get();
+    const config = configSnap.exists ? (configSnap.data() || {}) : {};
+    const referralBonus = parseInt(config.referralBonusAmount) || 10;
+    const actualReferralBonus = referralBonus > 0 ? referralBonus : 10;
+
+    // Fetch all users to check for unprocessed sign-up referrals 
+    // (since old app doesn't save refereeRewarded)
+    const q = await db.collection("Users").get();
+    
+    let batch = db.batch();
+    let batchCount = 0;
+    const now = Date.now();
+
+    for (let doc of q.docs) {
+      const uData = doc.data();
+      if (uData.referredBy && uData.referredBy.trim() !== "" && uData.refereeRewarded !== true) {
+        
+        // This user used a referral code but hasn't received their sign-up bonus yet!
+        // We reward User B (Referee) immediately!
+        // (User A, Referrer, will be rewarded automatically in /join-match later)
+        
+        batch.update(doc.ref, {
+          bonusBalance: admin.firestore.FieldValue.increment(actualReferralBonus),
+          refereeRewarded: true
+        });
+        
+        const txRef = db.collection("Transactions").doc();
+        batch.set(txRef, {
+          userId: doc.id,
+          uid: doc.id,
+          amount: actualReferralBonus,
+          type: "Referral Bonus",
+          title: "Referral Reward (Signed Up)",
+          status: "Success",
+          timestamp: now
+        });
+        
+        batchCount++;
+        
+        // Firestore batches support up to 500 operations. We have 2 ops per user.
+        if (batchCount >= 200) {
+          await batch.commit();
+          batch = db.batch();
+          batchCount = 0;
+        }
+      }
+    }
+    
+    if (batchCount > 0) {
+      await batch.commit();
+    }
+
+  } catch(e) {
+    console.error("Auto Referral Error:", e);
+  }
+}, 30 * 1000); // Run every 30 seconds
+
 /* ─────────────────────────────────────────────
    ENV VARIABLES
 ───────────────────────────────────────────── */
