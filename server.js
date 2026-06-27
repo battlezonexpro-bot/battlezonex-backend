@@ -517,173 +517,18 @@ app.post("/join-match", async (req, res) => {
               
               const wTxRef = db.collection("Transactions").doc();
               t.set(wTxRef, {
-   order_id: order_id 
-        }, { headers: { "Content-Type": "application/json" } });
-        
-        if (checkRes.data && (checkRes.data.status === "Success" || checkRes.data.status === "success")) {
-          isSuccess = true;
-        }
-      }
-    } else {
-      // Pay0Shop
-      const checkRes = await axios.post("https://pay0.shop/api/check-order-status", qs.stringify({ user_token: PAY0_TOKEN, order_id }), {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" }
-      });
-      const apiData = checkRes.data || {};
-      isSuccess = (apiData.status === true || String(apiData.status).toUpperCase() === "SUCCESS");
-    }
-
-    if (isSuccess) {
-      const uid = orderData.uid;
-      const amount = Number(orderData.amount);
-      const userRef = db.collection("Users").doc(uid);
-      await db.runTransaction(async (t) => {
-        const userDoc = await t.get(userRef);
-        const current = userDoc.exists ? (userDoc.data().depositBalance || 0) : 0;
-        t.set(userRef, { depositBalance: current + amount }, { merge: true });
-        t.update(orderRef, { status: "CREDITED", creditedAt: admin.firestore.FieldValue.serverTimestamp() });
-        const depositRef = db.collection("Deposits").doc(order_id);
-        t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: orderData.gateway || "Auto", timestamp: Date.now() });
-      });
-      await sendNotification(
-        "Payment Successful!",
-        `₹${amount} has been credited to your BattlexClash wallet.\n🪙 Coins added! Time to dominate the battlefield. 🔥`,
-        [uid],
-        {
-          subtitle: "💳 Transaction Confirmed — BattlexClash",
-          bigPicture: "https://i.postimg.cc/85z11sQc/payment-success.jpg",
-          color: "#388E3C"
-        }
-      );
-    }
-    
-    return res.status(200).json({ status: "ok" });
-  } catch (err) {
-    console.error("Webhook Error:", err);
-    return res.status(200).json({ status: "ok" });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   NEW: GET EMAIL FROM PHONE (SECURE)
-───────────────────────────────────────────── */
-app.post("/get-user-email", async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ status: false, message: "Missing phone" });
-
-    const snapshot = await db.collection("Users").where("phone", "==", phone).get();
-    
-    if (snapshot.empty) {
-      return res.status(404).json({ status: false, message: "Mobile number not registered" });
-    }
-
-    const userData = snapshot.docs[0].data();
-    if (!userData.email) {
-      return res.status(404).json({ status: false, message: "No email associated with this mobile number" });
-    }
-
-    return res.json({ status: true, email: userData.email });
-  } catch (error) {
-    return res.status(500).json({ status: false, message: error.message });
-  }
-});
-
-app.post("/change-slot", async (req, res) => {
-  const { matchId, uid, targetSlotIndex } = req.body;
-  if (!matchId || !uid || targetSlotIndex === undefined) return res.status(400).json({ status: false, message: "Missing fields" });
-
-  try {
-    const matchQuery = await db.collection("Matches").where("matchId", "==", matchId).get();
-    if (matchQuery.empty) return res.status(400).json({ status: false, message: "Match not found" });
-    const matchRef = matchQuery.docs[0].ref;
-
-    await db.runTransaction(async (t) => {
-      const matchDoc = await t.get(matchRef);
-      if (!matchDoc.exists) throw new Error("Match not found");
-      const mData = matchDoc.data();
-
-      if (mData.status !== "Upcoming") throw new Error("Match is no longer upcoming");
-
-      let players = Array.isArray(mData.joinedPlayers) ? [...mData.joinedPlayers] : [];
-      let igns = Array.isArray(mData.joinedIGNs) ? [...mData.joinedIGNs] : [];
-
-      const myIndex = players.indexOf(uid);
-      if (myIndex === -1) throw new Error("You have not joined this match");
-
-      while (players.length <= targetSlotIndex) {
-        players.push("");
-        igns.push("");
+                  userId: wDoc.id,
+                  uid: wDoc.id,
+                  amount: refBonusAmount,
+                  type: "Referral Bonus",
+                  title: "Referral Reward (Referrer Active)",
+                  status: "Success",
+                  timestamp: Date.now()
+              });
+          }
       }
 
-      const tempUid = players[targetSlotIndex];
-      const tempIgn = igns[targetSlotIndex];
-
-      players[targetSlotIndex] = uid;
-      igns[targetSlotIndex] = igns[myIndex];
-
-      players[myIndex] = tempUid || "";
-      igns[myIndex] = tempIgn || "";
-
-      t.update(matchRef, { joinedPlayers: players, joinedIGNs: igns });
-    });
-
-    res.json({ status: true, message: "Slot changed successfully!" });
-  } catch (error) {
-    res.status(500).json({ status: false, message: error.message });
-  }
-});
-
-app.post("/join-match", async (req, res) => {
-  const { matchId, uid, ign, slotIndex } = req.body;
-  if (!matchId || !uid || !ign) return res.status(400).json({ status: false, message: "Missing fields" });
-
-  try {
-    const matchQuery = await db.collection("Matches").where("matchId", "==", matchId).get();
-    if (matchQuery.empty) return res.status(400).json({ status: false, message: "Match not found" });
-    const matchRef = matchQuery.docs[0].ref;
-    const userRef = db.collection("Users").doc(uid);
-
-    let matchDataForNotif = null;
-
-    await db.runTransaction(async (t) => {
-      const userDoc = await t.get(userRef);
-      const matchDoc = await t.get(matchRef);
-
-      if (!userDoc.exists) throw new Error("User profile not found! Please restart app.");
-      const mData = matchDoc.data();
-      matchDataForNotif = mData;
-      if (mData.status !== "Upcoming") throw new Error("This match is no longer upcoming!");
-
-      let initialFee = mData.entryFee || 0;
-      let remFee = initialFee;
-      let uData = userDoc.data();
-      let bon = uData.bonusBalance || 0;
-      let dep = uData.depositBalance || 0;
-      let win = uData.winningBalance || 0;
-
-      const joined = mData.joinedSpots || 0;
-      const total = mData.totalSpots || 0;
-      const players = Array.isArray(mData.joinedPlayers) ? [...mData.joinedPlayers] : [];
-      const igns = Array.isArray(mData.joinedIGNs) ? [...mData.joinedIGNs] : [];
-
-      while(igns.length < players.length) igns.push("Player");
-
-      if (players.includes(uid)) throw new Error("You have already joined this match!");
-      if (joined >= total) throw new Error("This match is already full!");
-
-      if (bon >= remFee) { bon -= remFee; remFee = 0; }
-      else {
-        remFee -= bon; bon = 0;
-        if (dep >= remFee) { dep -= remFee; remFee = 0; }
-        else {
-          remFee -= dep; dep = 0;
-          if (win >= remFee) { win -= remFee; remFee = 0; }
-          else throw new Error("Insufficient Balance! Please add money to your wallet.");
-        }
-      }
-
-      t.update(userRef, { bonusBalance: bon, depositBalance: dep, winningBalance: win });
+      t.update(userRef, updateUserData);
       if (slotIndex !== undefined && slotIndex !== null && slotIndex >= 0 && slotIndex < total) {
         while (players.length <= slotIndex) {
           players.push("");
