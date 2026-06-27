@@ -107,6 +107,108 @@ async function sendNotification(title, message, uids = null, options = {}) {
 app.get("/", (req, res) => res.send("🚀 BattlexClash Production Backend Online"));
 
 /* ─────────────────────────────────────────────
+   AUTH & REFERRAL API
+───────────────────────────────────────────── */
+app.post("/api/auth/process-signup", async (req, res) => {
+  try {
+    const { uid, name, email, phone, deviceId, refCode, isGoogle } = req.body;
+    if (!uid) return res.status(400).json({ success: false, error: "Missing uid" });
+    
+    // 1. Fetch AppConfig
+    const configSnap = await db.collection("Settings").doc("AppConfig").get();
+    const config = configSnap.data() || {};
+    const welcomeBonus = parseInt(config.welcomeBonusAmount) || 10;
+    const referralBonus = parseInt(config.referralBonusAmount) || 10;
+    const actualReferralBonus = referralBonus > 0 ? referralBonus : 10;
+    
+    // 2. Default user data
+    let finalBonus = welcomeBonus;
+    let refereeRewarded = false;
+    let finalRefCode = (name || "").split(" ")[0].toUpperCase().replace(/[^A-Z]/g, "") || "PLAYER";
+    finalRefCode += Math.floor(100000 + Math.random() * 900000).toString();
+    if (isGoogle) {
+        finalRefCode = "BZX" + Math.floor(10000 + Math.random() * 90000).toString() + "ABC";
+    }
+    let referredBy = "";
+    
+    // 3. Process referral if provided
+    if (refCode) {
+      const q = await db.collection("Users").where("myReferralCode", "==", refCode.trim()).get();
+      if (!q.empty) {
+        const referrerDoc = q.docs[0];
+        const rData = referrerDoc.data();
+        const hasPlayed = rData.hasPlayedMatch === true || String(rData.hasPlayedMatch) === "true" || (rData.matchesPlayed && rData.matchesPlayed > 0);
+        
+        if (hasPlayed) {
+          finalBonus = welcomeBonus + actualReferralBonus;
+          refereeRewarded = true;
+          referredBy = refCode.trim();
+          
+          // Reward Referrer
+          await referrerDoc.ref.update({
+            bonusBalance: admin.firestore.FieldValue.increment(actualReferralBonus)
+          });
+          
+          await db.collection("Transactions").add({
+            userId: referrerDoc.id,
+            uid: referrerDoc.id,
+            amount: actualReferralBonus,
+            type: "Referral Bonus",
+            title: "Referral Reward",
+            status: "Success",
+            timestamp: Date.now()
+          });
+        }
+      }
+    }
+    
+    // 4. Create new user
+    const newUser = {
+      uid, 
+      name: name || "", 
+      email: email || "", 
+      phone: phone || "", 
+      deviceId: deviceId || "",
+      bonusBalance: finalBonus,
+      depositBalance: 0,
+      winningBalance: 0,
+      walletBalance: 0,
+      myReferralCode: finalRefCode,
+      referredBy,
+      refereeRewarded,
+      totalKills: 0,
+      matchesPlayed: 0,
+      inGameName: "",
+      profileImageUrl: "",
+      lastSpinTime: 0,
+      isDarkMode: false,
+      isBanned: false,
+      ffUid: "",
+      ffLevel: ""
+    };
+    
+    await db.collection("Users").doc(uid).set(newUser);
+    
+    // 5. Create transaction for new user if rewarded
+    if (refereeRewarded) {
+      await db.collection("Transactions").add({
+        userId: uid,
+        uid,
+        amount: actualReferralBonus,
+        type: "Referral Bonus",
+        title: "Referral Reward (Signed Up)",
+        status: "Success",
+        timestamp: Date.now()
+      });
+    }
+    
+    res.json({ success: true, user: newUser });
+  } catch (error) {
+    console.error("Signup Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+/* ─────────────────────────────────────────────
    NOTIFICATION API
 ───────────────────────────────────────────── */
 app.all("/send-notification", async (req, res) => {
@@ -488,7 +590,7 @@ app.post("/join-match", async (req, res) => {
           updateUserData.refereeRewarded = false;
 
           // If A has already played a match, B (current user) also gets the reward immediately
-          if (refData.hasPlayedMatch) {
+          if (refData.hasPlayedMatch && !uData.refereeRewarded) {
               updateUserData.bonusBalance += refBonusAmount;
               updateUserData.refereeRewarded = true;
               
