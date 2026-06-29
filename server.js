@@ -32,65 +32,21 @@ try {
   console.log("Firebase Error:", err.message);
 }
 
-// --- Background Auto-Referral Job ---
-setInterval(async () => {
-  try {
-    const configSnap = await db.collection("Settings").doc("AppConfig").get();
-    const config = configSnap.exists ? (configSnap.data() || {}) : {};
-    const referralBonus = parseInt(config.referralBonusAmount) || 10;
-    const actualReferralBonus = referralBonus > 0 ? referralBonus : 10;
+// --- CACHED APP CONFIG ---
+let cachedAppConfig = {
+  welcomeBonusAmount: 10,
+  referralBonusAmount: 10,
+  activePaymentGateway: "pay0shop"
+};
 
-    // Fetch all users to check for unprocessed sign-up referrals 
-    // (since old app doesn't save refereeRewarded)
-    const q = await db.collection("Users").get();
-    
-    let batch = db.batch();
-    let batchCount = 0;
-    const now = Date.now();
-
-    for (let doc of q.docs) {
-      const uData = doc.data();
-      if (uData.referredBy && uData.referredBy.trim() !== "" && uData.refereeRewarded !== true) {
-        
-        // This user used a referral code but hasn't received their sign-up bonus yet!
-        // We reward User B (Referee) immediately!
-        // (User A, Referrer, will be rewarded automatically in /join-match later)
-        
-        batch.update(doc.ref, {
-          bonusBalance: admin.firestore.FieldValue.increment(actualReferralBonus),
-          refereeRewarded: true
-        });
-        
-        const txRef = db.collection("Transactions").doc();
-        batch.set(txRef, {
-          userId: doc.id,
-          uid: doc.id,
-          amount: actualReferralBonus,
-          type: "Referral Bonus",
-          title: "Referral Reward (Signed Up)",
-          status: "Success",
-          timestamp: now
-        });
-        
-        batchCount++;
-        
-        // Firestore batches support up to 500 operations. We have 2 ops per user.
-        if (batchCount >= 200) {
-          await batch.commit();
-          batch = db.batch();
-          batchCount = 0;
-        }
-      }
+if (db) {
+  db.collection("Settings").doc("AppConfig").onSnapshot(snap => {
+    if (snap.exists) {
+      cachedAppConfig = { ...cachedAppConfig, ...snap.data() };
+      console.log("⚙️ AppConfig Updated in Cache");
     }
-    
-    if (batchCount > 0) {
-      await batch.commit();
-    }
-
-  } catch(e) {
-    console.error("Auto Referral Error:", e);
-  }
-}, 30 * 1000); // Run every 30 seconds
+  }, err => console.log("Config Snapshot Error:", err.message));
+}
 
 /* ─────────────────────────────────────────────
    ENV VARIABLES
@@ -174,9 +130,8 @@ app.post("/api/auth/process-signup", async (req, res) => {
     const { uid, name, email, phone, deviceId, refCode, isGoogle } = req.body;
     if (!uid) return res.status(400).json({ success: false, error: "Missing uid" });
     
-    // 1. Fetch AppConfig
-    const configSnap = await db.collection("Settings").doc("AppConfig").get();
-    const config = configSnap.data() || {};
+    // 1. Use Cached AppConfig
+    const config = cachedAppConfig;
     const welcomeBonus = parseInt(config.welcomeBonusAmount) || 10;
     const referralBonus = parseInt(config.referralBonusAmount) || 10;
     const actualReferralBonus = referralBonus > 0 ? referralBonus : 10;
@@ -323,13 +278,9 @@ app.post("/create-order", async (req, res) => {
 
     const order_id = `BZX_${uid.slice(0, 8)}_${Date.now()}`;
     
-    // Fetch active gateway from AppConfig
-    const configDoc = await db.collection("Settings").doc("AppConfig").get();
+    // Fetch active gateway from Cached AppConfig
     let gateway = "pay0shop";
-    if (configDoc.exists) {
-        const conf = configDoc.data();
-        if (conf.activePaymentGateway === "zapupi") gateway = "zapupi";
-    }
+    if (cachedAppConfig.activePaymentGateway === "zapupi") gateway = "zapupi";
 
     if (gateway === "zapupi") {
       const payload = {
@@ -440,13 +391,12 @@ app.all("/webhook", async (req, res) => {
         t.set(depositRef, { depositId: order_id, orderId: order_id, userId: uid, amount, status: "Confirmed", gateway: orderData.gateway || "Auto", timestamp: Date.now() });
       });
       await sendNotification(
-        "Payment Successful!",
-        `₹${amount} has been credited to your BattlexClash wallet.\n🪙 Coins added! Time to dominate the battlefield. 🔥`,
+        "💳 Wallet Recharge Successful! 💎",
+        `Boom! 💥 ₹${amount} coins have been added to your wallet.\nGear up, join a match, and show them who's the boss! 🏆🔥`,
         [uid],
         {
-          subtitle: "💳 Transaction Confirmed — BattlexClash",
-          bigPicture: "https://i.postimg.cc/85z11sQc/payment-success.jpg",
-          color: "#388E3C"
+          subtitle: "Money Added Successfully! 🤑💸",
+          large_icon: "https://res.cloudinary.com/dqai5ofpf/image/upload/v1/logo_premium"
         }
       );
     }
@@ -571,7 +521,7 @@ app.post("/join-match", async (req, res) => {
       }
 
       if (referrerDoc || waitingReferees.length > 0) {
-          configDoc = await t.get(db.collection("Settings").doc("AppConfig"));
+          // No need to fetch config, use cache
       }
       matchDataForNotif = mData;
       if (mData.status !== "Upcoming") throw new Error("This match is no longer upcoming!");
@@ -607,7 +557,7 @@ app.post("/join-match", async (req, res) => {
           updateUserData.hasPlayedMatch = true;
       }
 
-      const refBonusAmount = configDoc ? (Number(configDoc.data()?.referralBonusAmount) || 10) : 10;
+      const refBonusAmount = Number(cachedAppConfig.referralBonusAmount) || 10;
 
       // WRITES 1: Award referral bonus when B joins
       if (referrerDoc) {
@@ -616,6 +566,14 @@ app.post("/join-match", async (req, res) => {
           // A (referrer) gets the reward
           const newRefBonus = (Number(refData.bonusBalance) || 0) + refBonusAmount;
           t.update(referrerDoc.ref, { bonusBalance: newRefBonus });
+          
+          // --- Premium Notification for Referrer ---
+          sendNotification(
+            "🎁 Referral Reward Unlocked! 💸",
+            `Congratulations! Your friend just played their first match. ₹${refBonusAmount} coins have been credited to your wallet! 💰✨`,
+            [referrerDoc.id],
+            { subtitle: "Free Coins Earned! 🤑" }
+          ).catch(e => console.log("Push Error:", e.message));
           
           const refTxRef = db.collection("Transactions").doc();
           t.set(refTxRef, {
@@ -658,6 +616,14 @@ app.post("/join-match", async (req, res) => {
                   bonusBalance: newBon,
                   refereeRewarded: true
               });
+              
+              // --- Premium Notification for waiting Referees ---
+              sendNotification(
+                "🎁 Referral Reward Unlocked! 💸",
+                `Congratulations! The friend who invited you just played a match. ₹${refBonusAmount} coins have been credited to your wallet! 💰✨`,
+                [wDoc.id],
+                { subtitle: "Free Coins Earned! 🤑" }
+              ).catch(e => console.log("Push Error:", e.message));
               
               const wTxRef = db.collection("Transactions").doc();
               t.set(wTxRef, {
@@ -708,6 +674,44 @@ app.post("/join-match", async (req, res) => {
     });
 
     res.json({ status: true, message: "Joined successfully!" });
+    
+    // --- Premium Notification for the User who joined ---
+    if (matchDataForNotif) {
+      sendNotification(
+        "🎮 Match Joined Successfully! ⚔️",
+        `You have successfully registered for "${matchDataForNotif.title}".\nGet your weapons ready and wait for the Room ID & Password! ⚡🔫`,
+        [uid],
+        { subtitle: "Battle Time! 🔥" }
+      ).catch(e => console.log("Push Error:", e.message));
+
+      // --- 50% FULL PREMIUM NOTIFICATION FOR NON-JOINED USERS ---
+      const newJoined = (matchDataForNotif.joinedSpots || 0) + 1;
+      const total = matchDataForNotif.totalSpots || 0;
+      
+      // If it just hit the 50% mark exactly
+      if (total > 0 && newJoined === Math.floor(total / 2)) {
+         db.collection("Users").get().then(snapshot => {
+             const allUids = snapshot.docs.map(doc => doc.id);
+             const joinedPlayers = Array.isArray(matchDataForNotif.joinedPlayers) ? matchDataForNotif.joinedPlayers : [];
+             // Only send to those who haven't joined yet
+             const targetUids = allUids.filter(id => !joinedPlayers.includes(id) && id !== uid);
+             
+             if (targetUids.length > 0) {
+                 // Send in batches of 2000 (OneSignal's limit for include_aliases)
+                 const chunkSize = 2000;
+                 for (let i = 0; i < targetUids.length; i += chunkSize) {
+                     const chunk = targetUids.slice(i, i + chunkSize);
+                     sendNotification(
+                         "⏳ Hurry! Only 50% Slots Left! 🔥",
+                         `"${matchDataForNotif.title}" is filling up fast! 🏃‍♂️💨\nGrab your slot before it's completely full and dominate the leaderboard! 🏆⚔️`,
+                         chunk,
+                         { subtitle: "Seats are running out! 🚨", large_icon: "https://res.cloudinary.com/dqai5ofpf/image/upload/v1/logo_premium" }
+                     ).catch(e => console.log("Push Error 50%:", e.message));
+                 }
+             }
+         }).catch(err => console.log("Error fetching users for 50% notif:", err));
+      }
+    }
 
     if (matchDataForNotif && matchDataForNotif.isPlayerHosted && matchDataForNotif.hostUid && matchDataForNotif.hostUid !== uid) {
        await sendNotification(
